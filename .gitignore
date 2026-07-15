@@ -80,5 +80,10 @@ docker-compose.override.yml
 
 # ── 上游 OpenMontage ───────────────────────────────
 OpenMontage/
+
+# ── 本地规划 & 记忆（含个人决策/架构记录）────────────
+plan/
+memory/
+
 # ── 总目录级别异常 ──────────────────────────────────
 !.env.example
