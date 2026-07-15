@@ -1,0 +1,2 @@
+# PyYAML 用于读取 OpenMontage 流水线清单 (仅读数据文件)
+pyyaml>=6.0

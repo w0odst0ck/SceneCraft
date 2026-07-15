@@ -1,0 +1,79 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+*.pkl
+*.pickle
+
+# ── 虚拟环境 ────────────────────────────────────────────
+.venv/
+venv/
+env/
+.virtualenvs/
+
+# ── 密钥 & 配置 ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.cert
+credentials/
+secrets.*
+config.local.*
+*.secret
+**/secrets/**
+**/credentials/**
+
+# ── 日志 ──────────────────────────────────────────────
+*.log
+logs/
+
+# ── 视频 / 音频 / 图片产物 ────────────────────────────
+output/
+*.mp4
+*.mov
+*.avi
+*.wmv
+*.webm
+*.mkv
+*.m4v
+*.wav
+*.mp3
+*.aac
+*.flac
+*.ogg
+*.m4a
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.svg
+*.ico
+
+# ── IDE / 编辑器 ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-*
+.project
+.classpath
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.bak
+
+# ── Docker ────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
