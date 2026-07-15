@@ -8,9 +8,9 @@
 
 | 项目 | 路径 | 准入门 |
 |------|------|--------|
-| OpenMontage | `video-factory/OpenMontage/` | ❌ 只读，不写任何文件 |
-| openmontage-bridge | `video-factory/openmontage-bridge/` | ✅ 开发和输出在此 |
-| 输出产物 | `video-factory/openmontage-bridge/output/` | ✅ bridge 的工作区 |
+| OpenMontage | `SceneCraft/OpenMontage/` | ❌ 只读，不写任何文件 |
+| openmontage-bridge | `SceneCraft/openmontage-bridge/` | ✅ 开发和输出在此 |
+| 输出产物 | `SceneCraft/openmontage-bridge/output/` | ✅ bridge 的工作区 |
 
 ## 初始化
 

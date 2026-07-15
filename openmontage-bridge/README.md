@@ -69,5 +69,5 @@ for p in bridge.list_pipelines():
 ## 环境要求
 
 - Python 3.10+
-- OpenMontage 项目在 `../OpenMontage/` (可配置，video-factory 总目录下的兄弟项目)
+- OpenMontage 项目在 `../OpenMontage/` (可配置，SceneCraft 总目录下的兄弟项目)
 - OpenMontage 的 `.venv` 已设置

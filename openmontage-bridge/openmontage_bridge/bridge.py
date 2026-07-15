@@ -27,9 +27,9 @@ from .exceptions import (
 )
 
 # ── 默认路径 ──────────────────────────────────────────────
-# bridge.py → openmontage_bridge/ → openmontage-bridge/ → video-factory/
+# bridge.py → openmontage_bridge/ → openmontage-bridge/ → SceneCraft/
 _BRIDGE_PKG = Path(__file__).resolve().parent.parent  # openmontage-bridge/
-_PARENT = _BRIDGE_PKG.parent                          # video-factory/
+_PARENT = _BRIDGE_PKG.parent                          # SceneCraft/
 _DEFAULT_OM_PATH = _PARENT / "OpenMontage"
 _DEFAULT_OUTPUT_ROOT = _BRIDGE_PKG / "output"
 _WORKER_SCRIPT = _BRIDGE_PKG / "scripts" / "worker.py"

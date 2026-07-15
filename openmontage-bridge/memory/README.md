@@ -5,7 +5,7 @@
 ## 2026-07-15
 
 ### 项目归档
-- 从 `projects/` 搬至 `projects/video-factory/`
+- 从 `projects/` 搬至 `projects/SceneCraft/`
 - `bridge.py` 默认 OM 路径改为 `_PARENT / "OpenMontage"`（原为 `_WORKSPACE / "projects" / "OpenMontage"`）
 - Git 初始化，branch: main
 - `.gitignore` 排除了 output/ __pycache__ .venv .env

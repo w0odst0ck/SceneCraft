@@ -5,7 +5,7 @@
 ## 2026-07-15
 
 ### 项目归档
-- 从 `projects/` 搬至 `projects/video-factory/`
+- 从 `projects/` 搬至 `projects/SceneCraft/`
 - `video_producer.py` 绝对路径改为动态解析
 - Git 初始化，branch: main
 - `.gitignore` 排除了 output/ __pycache__ .venv .env
