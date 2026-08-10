@@ -1,0 +1,4 @@
+# SceneCraft v2 — Phase A 依赖
+# 产物契约基于 pydantic v2（与 ai-short-drama/schemas/ 一致）
+pydantic>=2.0
+pytest

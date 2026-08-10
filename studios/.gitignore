@@ -1,0 +1,4 @@
+# 顶层 .gitignore 的 "memory/" 规则会忽略本目录下的各站日志目录。
+# 这里用更深的规则重新包含，确保 studios/*/memory/README.md 进入版本库。
+!memory/
+!memory/README.md

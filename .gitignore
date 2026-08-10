@@ -85,5 +85,10 @@ OpenMontage/
 plan/
 memory/
 
+# ── 运行产物（保留目录说明，忽略项目产物）────────────
+artifacts/*/
+!artifacts/README.md
+!artifacts/.gitkeep
+
 # ── 总目录级别异常 ──────────────────────────────────
 !.env.example
