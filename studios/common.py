@@ -34,7 +34,7 @@ DEFAULT_FILES: dict[str, str] = {
     "shoot": "shot_list.json",
     "prompt": "prompt_list.json",
     "edit": "editing_blueprint.json",
-    "render": "video_placeholder.json",
+    "render": "render_plan.json",
     "qc": "qc_report.json",
 }
 
@@ -43,6 +43,10 @@ T = TypeVar("T", bound=BaseModel)
 
 class InputError(Exception):
     """输入产物缺失或校验失败（缺上游产物时抛出，提示先跑上游工作室）。"""
+
+
+class HumanEditError(Exception):
+    """目标产物已被人工修改（edited_by=human），拒绝 AI 覆盖（血缘保护最简版）。"""
 
 
 def now_iso() -> str:
@@ -67,6 +71,11 @@ def build_parser(desc: str, concept: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument("--project", required=True, help="项目 ID，如 demo1（对应 artifacts/<project_id>/）")
     parser.add_argument("--artifacts-dir", default="artifacts/", help="产物仓库根目录（默认 artifacts/）")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="demo 模式：不调用 DeepSeek，使用内置演示输出（无需 API key）",
+    )
     if concept:
         parser.add_argument(
             "--concept",
@@ -168,11 +177,25 @@ def mark_done(manifest: Manifest, key: str, artifact: BaseModel) -> None:
 
 
 def write_artifact(project: Path, key: str, filename: str, artifact: T) -> Path:
-    """落盘产物：计算并回填 output_hash → 写 <project>/<stage>/<filename>.json。"""
+    """落盘产物：计算并回填 output_hash → 写 <project>/<stage>/<filename>.json。
+
+    人工产物保护：目标文件已存在且 edited_by == "human" 时抛 HumanEditError，
+    拒绝覆盖人工修改（重跑前需删除文件或将其改回 edited_by=ai）。
+    """
     artifact.output_hash = artifact.compute_hash()
     stage_dir = project / STAGE_DIRS[key]
     stage_dir.mkdir(parents=True, exist_ok=True)
     out_path = stage_dir / filename
+    if out_path.exists():
+        try:
+            existing = json.loads(out_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = None
+        if isinstance(existing, dict) and existing.get("edited_by") == "human":
+            raise HumanEditError(
+                f"该产物为人工修改（edited_by=human），拒绝覆盖：{out_path}\n"
+                "如需重跑请先删除该文件，或将其 edited_by 改回 ai。"
+            )
     out_path.write_text(
         json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

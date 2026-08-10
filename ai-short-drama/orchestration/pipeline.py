@@ -212,7 +212,7 @@ JSON格式: {{"concept": "...", "genre": "...", "target_duration_sec": 120, "tar
                                 scenes=[], total_duration_sec=0, emotional_curve=[])
         self.state.script = script
         self.state.save_artifact("script", script)
-        print(f"   ✅ {len(scene for scene in script.scenes)} 场 / {script.total_duration_sec}s")
+        print(f"   ✅ {len(script.scenes)} 场 / {script.total_duration_sec}s")
 
     def _stage_director(self):
         print("▶ 阶段 3: 导演 - 分镜拆解")

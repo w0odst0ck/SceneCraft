@@ -6,7 +6,7 @@ import pytest
 from schemas.artifact import ArtifactBase
 from schemas.editing_blueprint import EditingBlueprint
 from schemas.prompt_list import PromptList
-from schemas.script import Script
+from schemas.script import DialogueLine, Script
 from schemas.shot_list import Shot, ShotList
 from schemas.visual_bible import VisualBible
 
@@ -49,6 +49,27 @@ def test_scene_id_pattern_enforced():
 
     with pytest.raises(Exception):
         Scene(scene_id="bad", location="l", time_of_day="t", summary="s", emotional_arc="e", duration_sec=1.0)
+
+
+def test_script_dialogue_is_dialogue_line_list():
+    """Phase B.1 契约：Scene.dialogue 为 list[DialogueLine]（多轮对白），非 str。"""
+    script = Script.demo()
+    assert script.scenes[0].dialogue is not None  # demo 首场含对白
+    for scene in script.scenes:
+        if scene.dialogue is not None:
+            assert isinstance(scene.dialogue, list)
+            for line in scene.dialogue:
+                assert isinstance(line, DialogueLine)
+                assert line.speaker and line.line
+    # 多轮结构校验：非法类型（str）应被拒绝
+    with pytest.raises(Exception):
+        Script.model_validate({
+            **script.model_dump(mode="json"),
+            "scenes": [{
+                **script.scenes[0].model_dump(mode="json"),
+                "dialogue": "「这么晚了，买什么？」",  # 旧结构 str 不再合法
+            }],
+        })
 
 
 def test_visual_bible_structure():

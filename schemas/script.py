@@ -2,12 +2,23 @@
 
 复用 v1 ai-short-drama/schemas/script.py 的字段思路
 （title / logline / scenes / emotional_curve），顶层独立实现，字段可扩展。
+
+Phase B.1 契约修正：真实 DeepSeek 输出剧本对白为多轮对话结构
+（[{"speaker": "...", "line": "..."}]），原 `str` 单串类型与真实输出不符，
+故将 Scene.dialogue 由 `str | None` 改为 `list[DialogueLine] | None`。
 """
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 from schemas.artifact import ArtifactBase
+
+
+class DialogueLine(BaseModel):
+    """单句对白：说话人 + 台词。"""
+
+    speaker: str = Field(..., description="说话人（角色名）")
+    line: str = Field(..., description="台词内容")
 
 
 class Scene(BaseModel):
@@ -17,7 +28,9 @@ class Scene(BaseModel):
     location: str = Field(..., description="场景地点")
     time_of_day: str = Field(..., description="时间段（如 夜晚 / 黄昏）")
     summary: str = Field(..., description="本场概要")
-    dialogue: str | None = Field(default=None, description="本场关键台词（可选）")
+    dialogue: list[DialogueLine] | None = Field(
+        default=None, description="本场多轮对白列表（可选；每轮为说话人 + 台词）"
+    )
     emotional_arc: str = Field(..., description="本场情绪走向")
     duration_sec: float = Field(..., gt=0, description="本场预估时长（秒）")
 
@@ -42,7 +55,10 @@ class Script(ArtifactBase):
                     location="霓虹城区",
                     time_of_day="夜晚",
                     summary="快递员在雨夜派件时发现义体异常。",
-                    dialogue="（义体低语）你的记忆…是我的。",
+                    dialogue=[
+                        DialogueLine(speaker="义体", line="你的记忆…是我的。"),
+                        DialogueLine(speaker="快递员", line="是谁在说话？"),
+                    ],
                     emotional_arc="平静 → 警觉",
                     duration_sec=8.0,
                 ),
