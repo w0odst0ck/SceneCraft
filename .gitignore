@@ -92,3 +92,7 @@ artifacts/*/
 
 # ── 总目录级别异常 ──────────────────────────────────
 !.env.example
+
+# ── collab-flow 运行时 + dsh 设计文档 ────────────
+.flow/
+designs/
