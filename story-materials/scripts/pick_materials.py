@@ -216,7 +216,9 @@ def render(selected: list[Card], limit: int) -> str:
             total += len(block) + (1 if total else 0)
         # 放不下 → 跳过该卡继续（更小的 backup 卡仍可填充）
     if not parts and selected:  # E8：首卡单独超限 → 硬截（含 …）+ 警告
-        parts.append(render_card(selected[0])[:max(0, limit - 1)] + "…")
+        head = render_card(selected[0])
+        # limit==1 → 只输出省略号（1 字符）；limit<1 由函数开头 return "" 挡住
+        parts.append(head[:max(0, limit - 1)] + "…" if limit >= 1 else "")
         _warn("单张卡超限，已硬截断")
     return "\n".join(parts)
 

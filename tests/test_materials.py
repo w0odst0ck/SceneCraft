@@ -295,6 +295,14 @@ def test_pick_single_card_overflow(tmp_path, capsys):
     assert "硬截断" in capsys.readouterr().err
 
 
+def test_pick_limit_one_overflow(tmp_path):
+    """E8 边界：limit=1 → 只输出省略号（1 字符），不超限。"""
+    make_card(tmp_path, "huge", type_="setting", tags=["赛博朋克"], status="原创",
+              priority="core", title="超长卡", core="核" * 1500, reusable="用" * 1500)
+    out = pick_materials.pick_materials("赛博朋克", cards_dir=tmp_path, limit=1)
+    assert len(out) <= 1
+
+
 def test_pick_missing_core_skipped(tmp_path, capsys):
     """L2：缺必填节「核心设定」→ 整卡跳过 + 警告（与 E6 对称 fail-closed，不渲染空值）。"""
     make_card(tmp_path, "bad", type_="setting", tags=["赛博朋克"], status="原创",
