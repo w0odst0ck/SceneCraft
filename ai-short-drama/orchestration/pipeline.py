@@ -1,6 +1,6 @@
 """编排器：AI短剧多Agent Pipeline Runner
 
-Agent 通过 DeepSeek API 实际调用，通信通过结构化 JSON 文件。
+Agent 通过 LLM API（缺省 DeepSeek，可选本地 ollama）实际调用，通信通过结构化 JSON 文件。
 """
 
 from __future__ import annotations
@@ -41,17 +41,41 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
-AGENT_MODEL_MAP = {
-    "producer": DEEPSEEK_MODEL,
-    "writer": DEEPSEEK_MODEL,
-    "director": DEEPSEEK_MODEL,
-    "art_director": DEEPSEEK_MODEL,
-    "actor": DEEPSEEK_MODEL,
-    "cinematographer": DEEPSEEK_MODEL,
-    "editor": DEEPSEEK_MODEL,
-    "prompter": DEEPSEEK_MODEL,
-    "critic": DEEPSEEK_MODEL,
+# ── 本地 LLM 双后端配置（缺省 = DeepSeek，零影响）────────
+# SCENE_LLM_BACKEND: "deepseek"(缺省) | "ollama"
+# SCENE_OLLAMA_BASE: ollama OpenAI 兼容端点，缺省 http://127.0.0.1:11434/v1
+# SCENE_LLM_MODE:    ollama 后端时 test→qwen3.5:9b / prod→qwen3:14b-ctx2k，缺省 test
+OLLAMA_MODEL_MAP = {
+    "test": "qwen3.5:9b",       # 测试环境：快 9b
+    "prod": "qwen3:14b-ctx2k",  # 成品环境：质量 14b-ctx2k
 }
+
+
+def _llm_backend() -> str:
+    """当前 LLM 后端名：缺省 deepseek；可选 ollama。"""
+    return os.getenv("SCENE_LLM_BACKEND", "deepseek").strip().lower()
+
+
+def _ollama_model() -> str:
+    """按 SCENE_LLM_MODE 映射本地模型名（未知 mode 回落 test）。"""
+    mode = os.getenv("SCENE_LLM_MODE", "test").strip().lower()
+    return OLLAMA_MODEL_MAP.get(mode, OLLAMA_MODEL_MAP["test"])
+
+
+def _ollama_base_url() -> str:
+    """SCENE_OLLAMA_BASE 规范化，确保以 /v1 结尾。"""
+    base = (os.getenv("SCENE_OLLAMA_BASE") or "http://127.0.0.1:11434/v1").strip().rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
+
+
+# ollama 后端时全部 agent 指向本地模型；否则沿用 DEEPSEEK_MODEL（与旧版一致）
+# ⚠️ 模块级 env 在 import 时读取一次：SCENE_LLM_* / DEEPSEEK_* 需在 import 前设置
+#    （或写在 ai-short-drama/.env，模块顶部 load_dotenv 会先载入）；运行时改 env 需 reload。
+_AGENT_MODEL = _ollama_model() if _llm_backend() == "ollama" else DEEPSEEK_MODEL
+AGENT_MODEL_MAP = {name: _AGENT_MODEL for name in (
+    "producer", "writer", "director", "art_director", "actor",
+    "cinematographer", "editor", "prompter", "critic",
+)}
 
 # Token 预算控制
 AGENT_MAX_TOKENS = 4096
@@ -59,13 +83,26 @@ AGENT_MAX_TOKENS = 4096
 
 def call_deepseek(system_prompt: str, user_prompt: str, model: str = DEEPSEEK_MODEL,
                   max_tokens: int = AGENT_MAX_TOKENS) -> str:
-    """调用 DeepSeek API。"""
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    """调用 LLM API（缺省 DeepSeek；SCENE_LLM_BACKEND=ollama 时走本地 ollama）。
+
+    ollama 分支：url=SCENE_OLLAMA_BASE/chat/completions、无 Authorization，
+    model 由 SCENE_LLM_MODE 映射决定（忽略实参 model）。
+    """
+    if _llm_backend() == "ollama":
+        headers = {
+            "Content-Type": "application/json",
+        }
+        url = f"{_ollama_base_url()}/chat/completions"
+        effective_model = _ollama_model()
+    else:  # deepseek：与旧版行为完全一致
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        url = f"{DEEPSEEK_BASE_URL}/v1/chat/completions"
+        effective_model = model
     payload = {
-        "model": model,
+        "model": effective_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -74,7 +111,7 @@ def call_deepseek(system_prompt: str, user_prompt: str, model: str = DEEPSEEK_MO
         "temperature": 0.7,
     }
     resp = requests.post(
-        f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
+        url,
         headers=headers,
         json=payload,
         timeout=120,
@@ -98,8 +135,8 @@ class ShortDramaPipeline:
         output_root = output_root or (PROJECT_ROOT / "output")
         self.state = PipelineState(self.project_id, output_root)
 
-        # 校验 DeepSeek Key
-        if not DEEPSEEK_API_KEY:
+        # 校验 DeepSeek Key（ollama 后端无需 key，不触发 demo 降级）
+        if not DEEPSEEK_API_KEY and _llm_backend() != "ollama":
             print("⚠ 未配置 DEEPSEEK_API_KEY，将使用内置 Demo 模式")
             print("   在 ai-short-drama/.env 中设置 DEEPSEEK_API_KEY 即可激活真实调用")
             self.demo_mode = True
