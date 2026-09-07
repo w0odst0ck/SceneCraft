@@ -34,17 +34,39 @@ AGENT_MAX_TOKENS = 4096
 REQUEST_TIMEOUT = 60          # 单次调用超时（秒）
 RETRY_TIMES = 2               # 失败自动重试次数（指数退避，共尝试 RETRY_TIMES + 1 次）
 
+# ── 本地 ollama 双后端（缺省 deepseek 零影响；SCENE_LLM_BACKEND=ollama 时走本地）──
+# SCENE_LLM_MODE: test→qwen3.5:9b（快）/ prod→qwen3:14b-ctx2k（质量，ctx 2048 限短任务）
+OLLAMA_MODEL_MAP = {"test": "qwen3.5:9b", "prod": "qwen3:14b-ctx2k"}
+
+
+def _llm_backend() -> str:
+    return os.getenv("SCENE_LLM_BACKEND", "deepseek").strip().lower()
+
+
+def _ollama_model() -> str:
+    mode = os.getenv("SCENE_LLM_MODE", "test").strip().lower()
+    return OLLAMA_MODEL_MAP.get(mode, OLLAMA_MODEL_MAP["test"])
+
+
+def _ollama_base_url() -> str:
+    base = (os.getenv("SCENE_OLLAMA_BASE") or "http://127.0.0.1:11434/v1").strip().rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
+
 # 与 v1 一致的模型映射：默认 deepseek-chat，各 Agent 可单独覆盖
+# ollama 后端时全部指向本地模型。注意：AGENT_MODEL_MAP 在 import 时解析一次（SCENE_LLM_* 需
+# import 前设置，或写 .env 由 load_dotenv 先载入）；实际请求路由在 call 时读 env（ollama 分支
+# effective_model = 显式 model or 运行时 _ollama_model()）——ollama 分支不依赖 MAP 的值，保持一致。
+_AGENT_MODEL = _ollama_model() if _llm_backend() == "ollama" else DEEPSEEK_MODEL
 AGENT_MODEL_MAP: dict[str, str] = {
-    "producer": DEEPSEEK_MODEL,
-    "writer": DEEPSEEK_MODEL,
-    "director": DEEPSEEK_MODEL,
-    "art_director": DEEPSEEK_MODEL,
-    "actor": DEEPSEEK_MODEL,
-    "cinematographer": DEEPSEEK_MODEL,
-    "editor": DEEPSEEK_MODEL,
-    "prompter": DEEPSEEK_MODEL,
-    "critic": DEEPSEEK_MODEL,
+    "producer": _AGENT_MODEL,
+    "writer": _AGENT_MODEL,
+    "director": _AGENT_MODEL,
+    "art_director": _AGENT_MODEL,
+    "actor": _AGENT_MODEL,
+    "cinematographer": _AGENT_MODEL,
+    "editor": _AGENT_MODEL,
+    "prompter": _AGENT_MODEL,
+    "critic": _AGENT_MODEL,
 }
 
 # 计价常量（USD / 1K tokens），见模块顶部注释
@@ -86,34 +108,49 @@ def get_api_key() -> str | None:
 
 # ── 真实调用 ─────────────────────────────────────────────
 
+def _max_tokens() -> int:
+    """按 backend/mode 钳制输出上限：ollama prod（14b-ctx2k，ctx 2048）必须 < ctx，否则超窗必失败。"""
+    if _llm_backend() == "ollama" and _ollama_model() == OLLAMA_MODEL_MAP["prod"]:
+        return 1500  # 留 500+ 余量给 system+user prompt
+    return AGENT_MAX_TOKENS
+
+
 def call_deepseek(
     system_prompt: str,
     user_prompt: str,
     model: str | None = None,
 ) -> tuple[str, dict[str, int]]:
-    """调用 DeepSeek Chat Completions，返回 (content, usage)。
+    """调用 LLM Chat Completions（缺省 DeepSeek；SCENE_LLM_BACKEND=ollama 时本地），返回 (content, usage)。
 
-    - 未配置 key 抛 NoKeyError（由调用方决定 demo 还是报错）
+    - DeepSeek：未配置 key 抛 NoKeyError（由调用方决定 demo 还是报错）
+    - ollama：url=SCENE_OLLAMA_BASE/chat/completions、无 Authorization、model 按 SCENE_LLM_MODE 映射
     - 单次超时 REQUEST_TIMEOUT（60s），失败自动重试 RETRY_TIMES 次（指数退避）
     - 返回原始文本（不解析 JSON），usage 含 prompt_tokens / completion_tokens
     """
-    api_key = get_api_key()
-    if not api_key:
-        raise NoKeyError(
-            "未配置 DEEPSEEK_API_KEY（环境变量与 ai-short-drama/.env 均缺失）。"
-            "如需无 key 演示请使用 --demo；真实调用请在 ai-short-drama/.env 配置 key。"
-        )
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    if _llm_backend() == "ollama":
+        headers = {"Content-Type": "application/json"}
+        url = f"{_ollama_base_url()}/chat/completions"
+        effective_model = model or _ollama_model()  # honor 显式传参；缺省按 mode 映射
+    else:
+        api_key = get_api_key()
+        if not api_key:
+            raise NoKeyError(
+                "未配置 DEEPSEEK_API_KEY（环境变量与 ai-short-drama/.env 均缺失）。"
+                "如需无 key 演示请使用 --demo；真实调用请在 ai-short-drama/.env 配置 key。"
+            )
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{DEEPSEEK_BASE_URL}/v1/chat/completions"
+        effective_model = model or AGENT_MODEL_MAP.get("producer", DEEPSEEK_MODEL)
     payload = {
-        "model": model or AGENT_MODEL_MAP.get("producer", DEEPSEEK_MODEL),
+        "model": effective_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "max_tokens": AGENT_MAX_TOKENS,
+        "max_tokens": _max_tokens(),
         "temperature": 0.7,
     }
 
@@ -121,7 +158,7 @@ def call_deepseek(
     for attempt in range(RETRY_TIMES + 1):
         try:
             resp = requests.post(
-                f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
+                url,
                 headers=headers,
                 json=payload,
                 timeout=REQUEST_TIMEOUT,
@@ -139,7 +176,7 @@ def call_deepseek(
             if attempt < RETRY_TIMES:
                 time.sleep(2 ** attempt)  # 指数退避：1s、2s
     raise RuntimeError(
-        f"DeepSeek 调用失败（已重试 {RETRY_TIMES} 次）：{last_exc}"
+        f"{_llm_backend()} 调用失败（已重试 {RETRY_TIMES} 次）：{last_exc}"
     ) from last_exc
 
 
