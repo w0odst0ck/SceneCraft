@@ -20,6 +20,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from studios.common import STAGE_DIRS  # 01_script … 07_qc 目录映射（与各 run.py 一致）
+# 两环境公共描述函数（供 main 启动提示用；run_pipeline 以子进程逐站调 run.py，env 提示仅防跑错环境）
+from studios.agent_utils import describe_environment
 
 # 全链依赖顺序（qc 为横切站，默认不参与）
 CHAIN = ["script", "art", "shoot", "prompt", "edit", "render"]
@@ -74,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="demo 模式：不调用 DeepSeek，使用内置演示输出（无需 API key）")
     parser.add_argument("--qc", action="store_true", help="全链跑完后追加 QC 质检（默认检 script）")
     args = parser.parse_args(argv)
+
+    # 两环境启动提示（run_pipeline 以子进程逐站调 run.py，env 不跨进程共享——
+    # 各站 run.py 各自读 env（现状）；此处打印仅作提示，杜绝跑错环境）
+    env, backend, model = describe_environment()
+    print(f"环境: {env} → 后端 {backend}（模型 {model}）")
 
     # 仅当 script 站在本轮待跑链中才强制 --concept（断点续跑 --from 非 script 时无需）
     if args.from_stage == "script" and not args.concept:

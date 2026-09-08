@@ -3,8 +3,9 @@
 从 v1 ai-short-drama/orchestration/pipeline.py 的 call_deepseek / AGENT_MODEL_MAP /
 demo 分支逻辑参考移植并增强（不 import v1）：
 
-- call_deepseek(): 真实 DeepSeek 调用（读 key → 超时 60s → 失败重试 2 次指数退避），
-  返回 (text, usage)，JSON 解析交给各站（safe_parse_json 兜底）
+- call_deepseek(): 真实 LLM 调用——按两环境路由：test（SCENE_ENV=test）走本地 ollama
+  （¥0 开发/链路验证，超时放宽 300s），prod（缺省）走 DeepSeek（读 key → 超时 60s →
+  失败重试 2 次指数退避）。返回 (text, usage)，JSON 解析交给各站（safe_parse_json 兜底）
 - safe_parse_json(): 剥离 markdown 代码围栏、找第一个 JSON 块解析，失败抛 JSONParseError
 - AgentCaller:    统一入口，真实模式走 call_deepseek，demo 模式返回内置演示输出；
                   累计每站 token 用量并换算成本（供 manifest 回填 cost_usd）
@@ -27,36 +28,85 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
-# ── DeepSeek 配置 ────────────────────────────────────────
+# ── 两环境配置（唯一入口 SCENE_ENV=test|prod）────────────
+# 语义：test = 本地 ollama（¥0 开发/链路验证）；prod = DeepSeek（成品质量）。
+# 缺省 prod（保质量），测试环境显式切 test。后端由 SCENE_ENV 派生，不允许手设；
+# 仅调试可用 SCENE_BACKEND_OVERRIDE 显式覆盖（旧 SCENE_LLM_BACKEND 兼容，见 _backend_override）。
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")  # 可用 DEEPSEEK_MODEL=deepseek-v4-flash 覆盖
+SCENE_ENV_DEFAULT = "prod"                  # 缺省 prod：成品质量优先，测试显式切 test
+ENV_TO_BACKEND = {"test": "ollama", "prod": "deepseek"}  # 环境 → 后端派生表
+OLLAMA_DEFAULT_MODEL = "qwen3.5:9b"         # SCENE_OLLAMA_MODEL 缺省（本地快模型）
+OLLAMA_CTX2K_MODEL = "qwen3:14b-ctx2k"      # ctx 2048 受限模型：max_tokens 须 < ctx（弃用过渡映射目标）
 AGENT_MAX_TOKENS = 4096
-REQUEST_TIMEOUT = 60          # 单次调用超时（秒）
+REQUEST_TIMEOUT = 60          # prod DeepSeek 单次调用超时（秒）
+OLLAMA_REQUEST_TIMEOUT = 300  # test ollama 本地生成慢，60s 会误杀 → 放宽（hotfix 保留）
 RETRY_TIMES = 2               # 失败自动重试次数（指数退避，共尝试 RETRY_TIMES + 1 次）
 
-# ── 本地 ollama 双后端（缺省 deepseek 零影响；SCENE_LLM_BACKEND=ollama 时走本地）──
-# SCENE_LLM_MODE: test→qwen3.5:9b（快）/ prod→qwen3:14b-ctx2k（质量，ctx 2048 限短任务）
-OLLAMA_MODEL_MAP = {"test": "qwen3.5:9b", "prod": "qwen3:14b-ctx2k"}
+def _request_timeout() -> int:
+    """按后端放宽单次调用超时：ollama（test 本地）→ 300s；deepseek（prod）保持 60s。"""
+    return OLLAMA_REQUEST_TIMEOUT if _resolve_backend() == "ollama" else REQUEST_TIMEOUT
 
 
-def _llm_backend() -> str:
-    return os.getenv("SCENE_LLM_BACKEND", "deepseek").strip().lower()
+def _scene_env() -> str:
+    """读取唯一入口 SCENE_ENV=test|prod；缺省 prod（保质量），未知值回退 prod。"""
+    env = os.getenv("SCENE_ENV", SCENE_ENV_DEFAULT).strip().lower()
+    return env if env in ENV_TO_BACKEND else SCENE_ENV_DEFAULT
+
+
+def _backend_override() -> str | None:
+    """调试显式覆盖后端：SCENE_BACKEND_OVERRIDE=deepseek|ollama 优先于 SCENE_ENV 派生。
+
+    兼容（弃用）：旧 SCENE_LLM_BACKEND 显式设为非默认值（ollama）时按 override 同等处理，
+    老调用方不炸；显式 deepseek 即旧默认值，与新派生默认（prod→deepseek）一致，无需处理。
+    """
+    override = os.getenv("SCENE_BACKEND_OVERRIDE", "").strip().lower()
+    if override in ("deepseek", "ollama"):
+        return override
+    if os.getenv("SCENE_LLM_BACKEND", "").strip().lower() == "ollama":
+        return "ollama"
+    return None
+
+
+def _resolve_backend() -> str:
+    """解析实际后端：override 优先 → SCENE_ENV 派生（test→ollama / prod→deepseek）。"""
+    return _backend_override() or ENV_TO_BACKEND[_scene_env()]
 
 
 def _ollama_model() -> str:
-    mode = os.getenv("SCENE_LLM_MODE", "test").strip().lower()
-    return OLLAMA_MODEL_MAP.get(mode, OLLAMA_MODEL_MAP["test"])
+    """运行时直选本地模型：SCENE_OLLAMA_MODEL 优先，缺省 qwen3.5:9b。
+
+    弃用过渡：SCENE_OLLAMA_MODEL 未设而旧 SCENE_LLM_MODE（test/prod）已设时，最后一次
+    按其映射（test→qwen3.5:9b / prod→qwen3:14b-ctx2k）；两者均未设才用缺省。
+    """
+    model = os.getenv("SCENE_OLLAMA_MODEL", "").strip()
+    if model:
+        return model
+    if os.getenv("SCENE_LLM_MODE", "").strip().lower() == "prod":
+        return OLLAMA_CTX2K_MODEL
+    return OLLAMA_DEFAULT_MODEL  # test / 未知 / 未设
 
 
 def _ollama_base_url() -> str:
     base = (os.getenv("SCENE_OLLAMA_BASE") or "http://127.0.0.1:11434/v1").strip().rstrip("/")
     return base if base.endswith("/v1") else f"{base}/v1"
 
+
+def describe_environment() -> tuple[str, str, str]:
+    """公共描述：返回 (env, backend, model) 解析结果，供 CLI 横幅 / 诊断打印。
+
+    backend/model 与真实路由完全同源（同一套解析函数），避免各调用方自行推导不一致。
+    """
+    backend = _resolve_backend()
+    model = _ollama_model() if backend == "ollama" else DEEPSEEK_MODEL
+    return _scene_env(), backend, model
+
 # 与 v1 一致的模型映射：默认 deepseek-chat，各 Agent 可单独覆盖
-# ollama 后端时全部指向本地模型。注意：AGENT_MODEL_MAP 在 import 时解析一次（SCENE_LLM_* 需
-# import 前设置，或写 .env 由 load_dotenv 先载入）；实际请求路由在 call 时读 env（ollama 分支
-# effective_model = 显式 model or 运行时 _ollama_model()）——ollama 分支不依赖 MAP 的值，保持一致。
-_AGENT_MODEL = _ollama_model() if _llm_backend() == "ollama" else DEEPSEEK_MODEL
+# ollama（test）后端时全部指向本地模型。注意：AGENT_MODEL_MAP 在 import 时解析一次
+# （SCENE_ENV / SCENE_OLLAMA_MODEL 需 import 前设置，或写 .env 由 load_dotenv 先载入）；
+# 实际请求路由在 call 时读 env（ollama 分支 effective_model = 显式 model or 运行时
+# _ollama_model()）——ollama 分支不依赖 MAP 的值；deepseek 分支恒为 DEEPSEEK_MODEL，不受影响。
+_AGENT_MODEL = _ollama_model() if _resolve_backend() == "ollama" else DEEPSEEK_MODEL
 AGENT_MODEL_MAP: dict[str, str] = {
     "producer": _AGENT_MODEL,
     "writer": _AGENT_MODEL,
@@ -109,8 +159,8 @@ def get_api_key() -> str | None:
 # ── 真实调用 ─────────────────────────────────────────────
 
 def _max_tokens() -> int:
-    """按 backend/mode 钳制输出上限：ollama prod（14b-ctx2k，ctx 2048）必须 < ctx，否则超窗必失败。"""
-    if _llm_backend() == "ollama" and _ollama_model() == OLLAMA_MODEL_MAP["prod"]:
+    """按 ollama + ctx 受限模型钳制输出上限：qwen3:14b-ctx2k（ctx 2048）必须 < ctx，否则超窗必失败。"""
+    if _resolve_backend() == "ollama" and _ollama_model() == OLLAMA_CTX2K_MODEL:
         return 1500  # 留 500+ 余量给 system+user prompt
     return AGENT_MAX_TOKENS
 
@@ -120,17 +170,18 @@ def call_deepseek(
     user_prompt: str,
     model: str | None = None,
 ) -> tuple[str, dict[str, int]]:
-    """调用 LLM Chat Completions（缺省 DeepSeek；SCENE_LLM_BACKEND=ollama 时本地），返回 (content, usage)。
+    """调用 LLM Chat Completions，按两环境路由：test→本地 ollama；prod（缺省）→DeepSeek。
 
-    - DeepSeek：未配置 key 抛 NoKeyError（由调用方决定 demo 还是报错）
-    - ollama：url=SCENE_OLLAMA_BASE/chat/completions、无 Authorization、model 按 SCENE_LLM_MODE 映射
-    - 单次超时 REQUEST_TIMEOUT（60s），失败自动重试 RETRY_TIMES 次（指数退避）
+    - DeepSeek（prod）：未配置 key 抛 NoKeyError（由调用方决定 demo 还是报错）
+    - ollama（test）：url=SCENE_OLLAMA_BASE/chat/completions、无 Authorization、
+      model 按 SCENE_OLLAMA_MODEL 直选（缺省 qwen3.5:9b，兼容旧 SCENE_LLM_MODE 过渡）
+    - 单次超时 _request_timeout()（deepseek 60s / ollama 300s），失败自动重试 RETRY_TIMES 次（指数退避）
     - 返回原始文本（不解析 JSON），usage 含 prompt_tokens / completion_tokens
     """
-    if _llm_backend() == "ollama":
+    if _resolve_backend() == "ollama":
         headers = {"Content-Type": "application/json"}
         url = f"{_ollama_base_url()}/chat/completions"
-        effective_model = model or _ollama_model()  # honor 显式传参；缺省按 mode 映射
+        effective_model = model or _ollama_model()  # honor 显式传参；缺省按 SCENE_OLLAMA_MODEL 运行时直选
     else:
         api_key = get_api_key()
         if not api_key:
@@ -161,7 +212,7 @@ def call_deepseek(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=REQUEST_TIMEOUT,
+                timeout=_request_timeout(),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -176,7 +227,7 @@ def call_deepseek(
             if attempt < RETRY_TIMES:
                 time.sleep(2 ** attempt)  # 指数退避：1s、2s
     raise RuntimeError(
-        f"{_llm_backend()} 调用失败（已重试 {RETRY_TIMES} 次）：{last_exc}"
+        f"{_resolve_backend()} 调用失败（已重试 {RETRY_TIMES} 次）：{last_exc}"
     ) from last_exc
 
 
