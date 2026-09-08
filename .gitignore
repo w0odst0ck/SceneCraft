@@ -90,6 +90,9 @@ artifacts/*/
 !artifacts/README.md
 !artifacts/.gitkeep
 
+# ── 链路测试结果集（保留矩阵 README，忽略产物快照）────
+test-results/*/
+
 # ── 总目录级别异常 ──────────────────────────────────
 !.env.example
 
