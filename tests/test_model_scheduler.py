@@ -3,6 +3,7 @@
 覆盖：CLI stage 解析、load 预热+verify、verify 不达标 exit 2、free 幂等与逐个卸载。
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +39,8 @@ def _install_fake_run(monkeypatch, script=None, record=None):
                     return _cp(args, rc=22, stderr="curl: (22) 服务器返回错误")
                 return _cp(args, stdout="{}")
             return _cp(args, stdout="{}")
-        if args and args[0] == "nvidia-smi":
+        # 生产代码经 shutil.which 解析 nvidia-smi 路径（可能为完整路径），按 basename 匹配
+        if args and os.path.basename(args[0]) == "nvidia-smi":
             if script.get("smi_fail"):
                 return _cp(args, rc=1, stderr="nvidia-smi: not found")
             return _cp(args, stdout=script.get("vram", "0"))
@@ -73,7 +75,7 @@ def test_stage_llm14b_warmups_then_verifies_ok(monkeypatch, capsys):
     assert warmups[0]["keep_alive"] == "30m"
     assert warmups[0]["stream"] is False
     # nvidia-smi 查询使用预期参数
-    smi = [a for a in calls if a[0] == "nvidia-smi"]
+    smi = [a for a in calls if os.path.basename(a[0]) == "nvidia-smi"]
     assert smi and "--query-gpu=memory.used" in smi[0]
 
 

@@ -124,7 +124,9 @@ def unload_model(model: str) -> None:
 
 def vram_used_mb() -> int:
     """读 nvidia-smi memory.used（MB）。多 GPU 取最大占用值。"""
-    proc = _run(["nvidia-smi", "--query-gpu=memory.used",
+    import shutil
+    smi = shutil.which("nvidia-smi") or "/usr/lib/wsl/lib/nvidia-smi"
+    proc = _run([smi, "--query-gpu=memory.used",
                  "--format=csv,noheader,nounits"])
     if proc.returncode != 0:
         raise SchedulerError(f"nvidia-smi 失败 (rc={proc.returncode}): {(proc.stderr or '').strip()}")
