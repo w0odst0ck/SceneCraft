@@ -138,12 +138,16 @@ def test_mocked_pipeline_lineage_and_cost(tmp_path, monkeypatch):
 
     # cost_usd：mock 每次调用 usage=100/50 tokens
     # 单次成本 = 100/1000*0.0014 + 50/1000*0.0028 = 0.00028
+    # S2 分批后 shoot（director/cinematographer/actor）、prompt（prompter）与
+    # edit（editor，S2b）均按批次数计费：demo 剧本 4 场 → 每次逐场分批 4 批
     per_call = 100 / 1000 * au.PRICE_INPUT_PER_1K + 50 / 1000 * au.PRICE_OUTPUT_PER_1K
-    expected = {"script": 2 * per_call, "art": per_call, "shoot": 3 * per_call,
-                "prompt": per_call, "edit": per_call, "render": 0.0}
+    expected = {"script": 2 * per_call, "art": per_call, "shoot": 12 * per_call,
+                "prompt": 4 * per_call, "edit": 4 * per_call, "render": 0.0}
     for key, exp in expected.items():
         assert mf["studios"][key]["cost_usd"] == pytest.approx(exp, abs=1e-9), f"{key} cost_usd 错误"
-    assert calls["n"] == 8  # producer/writer + art_director + director/cinematographer/actor + prompter + editor
+    # S2 分批调用计数：producer/writer(2) + art_director(1) + shoot(4+4+4=12) +
+    # prompter(4) + editor(4) = 23
+    assert calls["n"] == 23
 
 
 # ── 3) 人工产物保护（血缘保护最简版）────────────────────

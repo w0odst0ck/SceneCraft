@@ -10,6 +10,9 @@ demo 分支逻辑参考移植并增强（不 import v1）：
 - AgentCaller:    统一入口，真实模式走 call_deepseek，demo 模式返回内置演示输出；
                   累计每站 token 用量并换算成本（供 manifest 回填 cost_usd）
 - call_agent_json(): 调用 + 解析 + 契约校验，解析失败自动重试 retries 次
+- call_agent_json_batched(): 分批调用（按场景/镜头批）→ 逐批合并 → 整份契约校验，
+  让链路对模型上下文规模不敏感（S2 分批生成）；单批失败定位到具体批次，merge 阶段
+  失败说明合并范围（无法定位单批）；NoKeyError 等用户可操作异常原样上抛
 
 DeepSeek 计价参考（2025-06 官方 deepseek-chat 按量计费，单位 USD / 1K tokens，
 简化取整，供 manifest.cost_usd 粗算，非精确账单）：
@@ -22,7 +25,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from dotenv import load_dotenv
@@ -128,13 +131,31 @@ class NoKeyError(Exception):
     """未配置 DEEPSEEK_API_KEY（环境变量与 ai-short-drama/.env 均缺失）。"""
 
 
+def _looks_truncated(text: str) -> bool:
+    """粗判输出是否被 max_tokens 截断：存在未闭合括号（开括号多于闭括号）。"""
+    s = text or ""
+    return s.count("{") > s.count("}") or s.count("[") > s.count("]")
+
+
 class JSONParseError(Exception):
-    """Agent 输出无法解析为合法 JSON，附带原文前 200 字供排错。"""
+    """Agent 输出无法解析为合法 JSON，附带原文前 200 字供排错。
+
+    增强（S2）：若输出疑似被 max_tokens 上限截断（有开括号无对应闭括号），
+    额外附「疑似输出达 max_tokens（N）上限、可能被截断」诊断提示，
+    便于定位 ctx 受限模型（如 qwen3:14b-ctx2k）的输出截断问题。
+    """
 
     def __init__(self, reason: str, text: str = ""):
         self.reason = reason
-        snippet = (text or "")[:200]
-        super().__init__(f"{reason}；原文前 200 字：{snippet!r}")
+        self.text = text or ""
+        snippet = self.text[:200]
+        message = f"{reason}；原文前 200 字：{snippet!r}"
+        if _looks_truncated(self.text):
+            message += (
+                f"\n提示：疑似输出达 max_tokens（{_max_tokens()}）上限、可能被截断；"
+                "建议减小单次输出规模（按场景/镜头分批生成）。"
+            )
+        super().__init__(message)
 
 
 # ── Key 读取 ─────────────────────────────────────────────
@@ -351,28 +372,53 @@ def _demo_writer(user_prompt: str) -> dict[str, Any]:
 
 
 def _demo_director(user_prompt: str) -> dict[str, Any]:
+    """demo 分镜：支持分批输入（单场 scene）与全量输入（script.scenes）两种形态。
+
+    分批生成（S2）时每批 user_prompt 只含本场 `scene`，此处按单场产出该场镜头；
+    大场细分组（shot_group.total > 1）时只返回本组应产出的那部分镜头——否则各组
+    都会重复产出整场镜头、合并后同场镜头被复制（组内切片保证并集 = 全场、无重复）。
+    未含 `scene` 时回退旧的整份 script（保持旧用法兼容）。
+    """
     data = _demo_parse_input(user_prompt)
-    script = data.get("script") or {}
-    scenes = script.get("scenes") or []
+    scene = data.get("scene")
+    if isinstance(scene, dict):
+        scenes = [scene]  # 分批：本批单场
+    else:
+        script = data.get("script") or {}
+        scenes = script.get("scenes") or []
+    group = data.get("shot_group") if isinstance(data.get("shot_group"), dict) else {}
+    try:
+        group_total = max(1, int(group.get("total") or 1))
+        group_index = max(1, int(group.get("index") or 1))
+    except (TypeError, ValueError):
+        group_total, group_index = 1, 1
     shots: list[dict[str, Any]] = []
     n = 0
     for scene in scenes:
-        for i in range(3):  # 每场 3 镜
+        # 每场镜数：细分组数超过 3 时以组数为准（否则后面的组会切出空镜头、被空批次校验拦下）
+        scene_shot_count = max(3, group_total) if group_total > 1 else 3
+        scene_shots: list[dict[str, Any]] = []
+        for i in range(scene_shot_count):  # 每场默认 3 镜
             n += 1
-            shots.append({
+            scene_shots.append({
                 "shot_id": f"SHOT_{n}",
                 "scene_id": scene.get("scene_id", f"SCENE_{n}"),
-                "duration": round(float(scene.get("duration_sec", 6.0)) / 3, 2),
+                "duration": round(float(scene.get("duration_sec", 6.0)) / scene_shot_count, 2),
                 "subject": "神秘顾客（深色风衣，兜帽遮脸）" if i == 0 else "主角（便利店店员）",
                 "action": "进入店内环视" if i == 0 else "暗中观察/对峙",
                 "emotion": scene.get("emotional_arc", "平静") or "平静",
                 "environment": scene.get("location", "雨夜便利店"),
                 "lighting": "冷色顶灯 + 窗外霓虹",
-                "camera_angle": ["低角度仰拍", "平视中景", "过肩特写"][i],
+                "camera_angle": ["低角度仰拍", "平视中景", "过肩特写"][i % 3],
                 "camera_movement": _CAMERA_MOVES[(n - 1) % len(_CAMERA_MOVES)],
                 "focal_length": _FOCAL_LENGTHS[(n - 1) % len(_FOCAL_LENGTHS)],
                 "narrative_purpose": f"场景{n}镜{i + 1}：推进剧情/交代细节",
             })
+        if group_total > 1:  # 细分组：本组只取整场镜头的一段（shot_id 由合并阶段重写）
+            per_group = (len(scene_shots) + group_total - 1) // group_total
+            start = (group_index - 1) * per_group
+            scene_shots = scene_shots[start:start + per_group]
+        shots.extend(scene_shots)
     return {"target_shots": len(shots), "shots": shots}
 
 
@@ -454,7 +500,21 @@ def _demo_prompter(user_prompt: str) -> dict[str, Any]:
     return {"model": _DEMO_MODEL, "aspect_ratio": _DEMO_ASPECT, "prompts": prompts}
 
 
+def _demo_shot_number(shot_id: Any) -> int:
+    """从 SHOT_k 里取 k（解析失败回退 0）：demo 按**全局镜号**给转场/音频落点。"""
+    try:
+        return int(str(shot_id).rsplit("_", 1)[-1])
+    except (TypeError, ValueError):
+        return 0
+
+
 def _demo_editor(user_prompt: str) -> dict[str, Any]:
+    """demo 剪辑：兼容分批输入（S2，单场 shot 子集）与全量输入两种形态。
+
+    分批时每批 user_prompt 只含本场镜头子集，本批输出的帧号仅是本批相对占位——
+    调用方（studio_edit）合并阶段按全局镜头顺序由代码统一补 start_frame /
+    end_frame / total_frames（不信模型自填跨批连续性），故此处帧号只需合法。
+    """
     data = _demo_parse_input(user_prompt)
     shot_list = data.get("shot_list") or {}
     shots = shot_list.get("shots") or []
@@ -462,23 +522,22 @@ def _demo_editor(user_prompt: str) -> dict[str, Any]:
     frame = 0
     for i, shot in enumerate(shots):
         sid = shot.get("shot_id", f"SHOT_{i + 1}")
+        num = _demo_shot_number(sid)  # 全局镜号：分批合并后转场分布与全量一致
         dur_frames = max(1, int(round(float(shot.get("duration", 3.0)) * _DEMO_FPS)))
         timeline.append({
             "shot_id": sid,
             "start_frame": frame,
             "end_frame": frame + dur_frames,
-            "transition_in": "Cut" if i == 0 else ("Cross Dissolve" if i % 3 == 0 else "Cut"),
+            "transition_in": "Cut" if num <= 1 else ("Cross Dissolve" if num % 4 == 0 else "Cut"),
             "transition_out": "Cut",
-            "audio_event": "雨声渐强" if i % 4 == 0 else None,
+            "audio_event": "雨声渐强" if num % 4 == 1 else None,
         })
         frame += dur_frames
-    beats = []
+    beats: list[dict[str, Any]] = []
     if timeline:
-        beats = [
-            {"time_sec": round(timeline[0]["start_frame"] / _DEMO_FPS, 1), "event": "开场雨声"},
-            {"time_sec": round(frame / 2 / _DEMO_FPS, 1), "event": "对峙鼓点"},
-            {"time_sec": round(frame / _DEMO_FPS, 1), "event": "收束"},
-        ]
+        # 每批只出本批落点；时间按全局镜号近似（合并阶段排序去重，避免分批后落点全挤在 0s）
+        first_num = _demo_shot_number(timeline[0]["shot_id"])
+        beats = [{"time_sec": float(max(0, first_num - 1)), "event": "雨声渐强"}]
     return {
         "target_fps": _DEMO_FPS,
         "timeline": timeline,
@@ -611,3 +670,147 @@ def call_agent_json(
             )
     assert last_exc is not None
     raise last_exc
+
+
+# ── 分批调用（S2：分镜/提示词分批生成）────────────────────
+# 背景：一次性全量生成时输入 + 输出共享模型上下文（ctx2k=2048），大项目必截断。
+# 改为「按场景分批 + 合并」：每批复用 call_agent_json 的解析/重试/契约注入，
+# 合并后再对整份结果做一次契约校验，保证最终产物结构不变。
+
+def _count_batch_items(result: Any) -> int:
+    """通用批次条目计数（进度打印用）：dict / list 取长度，其它按 1 计。"""
+    if isinstance(result, (dict, list)):
+        return len(result)
+    return 1
+
+
+def count_batch_key(result: Any, key: str) -> int:
+    """批次结果里某个键的条目数（进度打印 count_fn 用，dict-safe）。
+
+    背景（ocr medium）：每批 call_agent_json 未传 model_class → 结果是 raw
+    safe_parse_json 输出，而它同时尝试 `{` / `[` 两种块，可能返回**顶层 list**；
+    此时 `result.get(key)` 抛 AttributeError，且发生在 results.append 之后 →
+    掩盖真实批次结果、中断整个 run。故 count_fn 一律走本函数做类型防护。
+    """
+    if isinstance(result, dict):
+        value = result.get(key)
+        if isinstance(value, (dict, list)):
+            return len(value)
+    return 0
+
+
+def as_dict(result: Any) -> dict[str, Any]:
+    """把批次结果规范为 dict（非 dict → 空 dict），供 merge 函数做 dict-safe 访问。
+
+    与 count_batch_key 同源防护：模型可能吐顶层 list（raw safe_parse_json），
+    merge 阶段取字段前先规范化，避免 AttributeError 掩盖批次结果。
+    """
+    return result if isinstance(result, dict) else {}
+
+
+def group_shots_by_scene(
+    shot_list: Any, max_shots_per_batch: int | None = None
+) -> list[tuple[str, list[Any]]]:
+    """按 scene_id 把镜头分组（保持首次出现顺序），供 shoot / prompt / edit 同源分批。
+
+    入参可为 ShotList 实例（读 .shots 与 shot.scene_id）或 shot_list dict
+    （{"shots": [{...}]}）——鸭子类型处理，避免 agent_utils 依赖 schemas。
+    返回 [(scene_id, [本场镜头...]), ...]；批次边界即「逐场」，与剧本结构对齐。
+
+    max_shots_per_batch 给定时，单场镜数超过该上限则继续按上限切分（大场细分，
+    同一 scene_id 会出现多个**连续**批次），保证单次输入/输出规模可控
+    （ctx 受限模型）；缺省 None 保持「一场一批」原语义。
+    """
+    if isinstance(shot_list, dict):
+        raw_shots = shot_list.get("shots") or []
+
+        def _scene_of(shot: Any) -> str:
+            return str((shot or {}).get("scene_id") or "")
+    else:
+        raw_shots = getattr(shot_list, "shots", []) or []
+
+        def _scene_of(shot: Any) -> str:
+            return str(getattr(shot, "scene_id", "") or "")
+
+    order: list[str] = []
+    groups: dict[str, list[Any]] = {}
+    for shot in raw_shots:
+        sid = _scene_of(shot)
+        if sid not in groups:
+            groups[sid] = []
+            order.append(sid)
+        groups[sid].append(shot)
+    if max_shots_per_batch is None or max_shots_per_batch < 1:
+        return [(sid, groups[sid]) for sid in order]
+    # 大场细分：本场镜头按上限切片成多个连续批次（scene_id 不变，仅批量变小）
+    batches: list[tuple[str, list[Any]]] = []
+    for sid in order:
+        scene_shots = groups[sid]
+        for start in range(0, len(scene_shots), max_shots_per_batch):
+            batches.append((sid, scene_shots[start:start + max_shots_per_batch]))
+    return batches
+
+
+def call_agent_json_batched(
+    caller: AgentCaller,
+    agent: str,
+    soul_name: str,
+    batches: list[str],
+    merge_fn: Callable[[list[Any]], Any],
+    model_class: type[BaseModel] | None = None,
+    retries: int = 1,
+    count_fn: Callable[[Any], int] | None = None,
+) -> Any:
+    """分批调用 Agent → 逐批合并 → 整份契约校验（S2 分批生成的薄工具）。
+
+    - batches：每批的 user_prompt（调用方按业务边界构造，含契约注入）
+    - 每批复用 call_agent_json（既有解析/校验失败自动重试逻辑）
+    - 全部批次完成后调 merge_fn(results) 合并，再对整份结果做 model_class 校验
+      （model_class=None 时直接返回合并后的 dict）
+    - 进度打印：「[批次 k/N] <agent> 完成（本批 X 条）」（本地模型慢，进度可见）；
+      count_fn 须对结果做类型防护（每批结果是 raw safe_parse_json 输出，可能是
+      顶层 list）——请用 count_batch_key，避免 AttributeError 掩盖批次结果
+    - 失败策略（不静默降级）：
+      * 单批失败 → RuntimeError 标注「第 k/N 批」+ 已完成批次（可定位到具体批次）
+      * NoKeyError 等用户可操作异常 → **原样上抛**，不包装（否则各站 main() 的
+        NoKeyError 分支走不到，用户看不到「未配 key / 用 --demo」提示）
+      * merge 阶段失败 → RuntimeError 标注「merge 阶段、涉及全部 N 批」
+        （merge_fn 合并全部批次后才发现问题，无法再定位到单个批次）
+    """
+    if not batches:
+        raise RuntimeError(f"{agent} 分批调用失败：批次列表为空")
+    total = len(batches)
+    counter = count_fn or _count_batch_items
+    results: list[Any] = []
+    for idx, user_prompt in enumerate(batches, start=1):
+        try:
+            result = call_agent_json(caller, agent, soul_name, user_prompt, retries=retries)
+        except NoKeyError:
+            # 用户可操作异常（未配 DEEPSEEK_API_KEY）：原样上抛 → 各站 main() 的
+            # NoKeyError 分支给出「配置 key 或改用 --demo」的提示（ocr medium 修复）
+            raise
+        except Exception as exc:  # 批次失败：包装为带批次定位的 RuntimeError
+            done = "、".join(f"第 {i} 批" for i in range(1, idx)) or "无"
+            raise RuntimeError(
+                f"{agent} 第 {idx}/{total} 批失败（已完成批次：{done}；"
+                f"已成功 {len(results)} 批）：{exc}"
+            ) from exc
+        results.append(result)
+        print(f"[批次 {idx}/{total}] {agent} 完成（本批 {counter(result)} 条）")
+    try:
+        merged = merge_fn(results)
+    except Exception as exc:
+        # merge 阶段：merge_fn 一次合并全部 N 批，失败无法定位到单批 → 只报合并范围
+        raise RuntimeError(
+            f"{agent} 合并 {total} 批结果失败（merge 阶段，涉及全部 {total} 批）：{exc}"
+        ) from exc
+    if model_class is None:
+        return merged
+    try:
+        return model_class.model_validate(merged)
+    except ValidationError as exc:
+        # 合并后契约校验失败：各批解析/校验均已单批通过，问题出在 merge 阶段，
+        # 无法再定位到具体批次 → 消息说明失败阶段 + 涉及批次范围（共 N 批）
+        raise RuntimeError(
+            f"{agent} 合并后契约校验失败（merge 阶段，涉及全部 {total} 批）：{exc}"
+        ) from exc

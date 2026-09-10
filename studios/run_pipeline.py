@@ -50,7 +50,7 @@ OUTPUT_FILES = {
 
 
 def run_studio(key: str, project: str, artifacts_dir: str, concept: str | None,
-               demo: bool) -> subprocess.CompletedProcess:
+               demo: bool, material_tags: str | None = None) -> subprocess.CompletedProcess:
     """以子进程运行一个工作室 run.py，输出透传给父进程。"""
     cmd = [
         sys.executable,
@@ -60,6 +60,8 @@ def run_studio(key: str, project: str, artifacts_dir: str, concept: str | None,
     ]
     if key == "script" and concept:
         cmd += ["--concept", concept]
+        if material_tags:  # 素材注入仅 story 站消费（story-materials pick）
+            cmd += ["--material-tags", material_tags]
     if demo:
         cmd += ["--demo"]
     return subprocess.run(cmd, cwd=ROOT)
@@ -69,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SceneCraft 多工作室端到端全链")
     parser.add_argument("--project", required=True, help="项目 ID，如 demo-e2e（对应 artifacts/<project_id>/）")
     parser.add_argument("--concept", default=None, help="用户创意概念（短句；story 站必填）")
+    parser.add_argument("--material-tags", default=None,
+                        help="story-materials 素材卡 tags（逗号分隔；仅 story 站注入，未命中不影响流程）")
     parser.add_argument("--artifacts-dir", default="artifacts/", help="产物仓库根目录（默认 artifacts/）")
     parser.add_argument("--from", dest="from_stage", choices=CHAIN, default="script",
                         help="从指定站开始（断点续跑，默认 script 全链）")
@@ -89,13 +93,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n{'=' * 60}")
     print(f"🎬 SceneCraft 全链启动：{args.project}")
     print(f"   概念: {args.concept}")
+    print(f"   素材: {args.material_tags or '（未指定）'}")
     print(f"   模式: {'Demo（无 API 调用）' if args.demo else 'DeepSeek 真实调用'}")
     print(f"{'=' * 60}\n")
 
     start = CHAIN.index(args.from_stage)
     pending = CHAIN[start:]
     for key in pending:
-        result = run_studio(key, args.project, args.artifacts_dir, args.concept, args.demo)
+        result = run_studio(key, args.project, args.artifacts_dir, args.concept, args.demo,
+                            args.material_tags)
         if result.returncode != 0:
             print(f"\n❌ 全链中止：{key} 站失败（已完成产物已保留，可用 "
                   f"--from {key} 修复后续跑）")
