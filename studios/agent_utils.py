@@ -14,7 +14,10 @@ demo 分支逻辑参考移植并增强（不 import v1）：
   让链路对模型上下文规模不敏感（S2 分批生成）；单批失败定位到具体批次，merge 阶段
   失败说明合并范围（无法定位单批）；NoKeyError 等用户可操作异常原样上抛；
   batch_validator（S2c）可选：对每批输出做批内校验，不合格则**只重发该批**（batch_retries
-  次），避免某批模型输出不全就把整个站拖挂——重试仍不合格再汇总报错（含批次号 + 缺失项）
+  次），避免某批模型输出不全就把整个站拖挂——重试仍不合格再汇总报错（含批次号 + 缺失项）；
+  S2d：**调用级失败**（空响应 / JSONParseError / 批级 RuntimeError 等）同样**只重发本批**，
+  与校验不合格**共用同一 batch_retries 预算**（每轮 = 一次本批 call_agent_json，
+  故单批最多 batch_retries + 1 轮，且不因两类失败叠加而翻倍）；仅 NoKeyError 原样上抛不重试
 
 DeepSeek 计价参考（2025-06 官方 deepseek-chat 按量计费，单位 USD / 1K tokens，
 简化取整，供 manifest.cost_usd 粗算，非精确账单）：
@@ -516,6 +519,7 @@ def _demo_editor(user_prompt: str) -> dict[str, Any]:
     分批时每批 user_prompt 只含本场镜头子集，本批输出的帧号仅是本批相对占位——
     调用方（studio_edit）合并阶段按全局镜头顺序由代码统一补 start_frame /
     end_frame / total_frames（不信模型自填跨批连续性），故此处帧号只需合法。
+    帧号口径与契约一致（闭区间，S2d 统一）：end = start + 帧数 - 1、total = Σ 帧数。
     """
     data = _demo_parse_input(user_prompt)
     shot_list = data.get("shot_list") or {}
@@ -529,7 +533,7 @@ def _demo_editor(user_prompt: str) -> dict[str, Any]:
         timeline.append({
             "shot_id": sid,
             "start_frame": frame,
-            "end_frame": frame + dur_frames,
+            "end_frame": frame + dur_frames - 1,   # 闭区间：出点含端点
             "transition_in": "Cut" if num <= 1 else ("Cross Dissolve" if num % 4 == 0 else "Cut"),
             "transition_out": "Cut",
             "audio_event": "雨声渐强" if num % 4 == 1 else None,
@@ -753,6 +757,31 @@ def group_shots_by_scene(
     return batches
 
 
+def batch_failure_hint(exc: Exception) -> str:
+    """批内调用失败的简短原因：回灌给模型自纠（重试提示）+ 汇总报错（含批次号）共用。
+
+    - 空响应 / JSON 解析失败（JSONParseError）：细分为「输出为空」「解析失败」
+      （JSONParseError.reason 由 safe_parse_json 给出，如 "输出为空" / "未找到 JSON 对象/数组"）
+    - 其它异常（网络/批级 RuntimeError 等）：按异常类型名给出简短说明
+    """
+    if isinstance(exc, JSONParseError):
+        reason = exc.reason or ""
+        return "输出为空" if "输出为空" in reason else f"解析失败（{reason}）"
+    return f"调用异常（{type(exc).__name__}）"
+
+
+def _batch_retry_prompt(user_prompt: str, reason: str) -> str:
+    """构造批内重试提示：把失败原因回灌给模型帮助自纠。
+
+    一律以**原始** user_prompt 为基底拼接（不叠加历次提示），避免多次重试后
+    提示语层层嵌套、上下文膨胀。
+    """
+    return (
+        f"{user_prompt}\n\n【注意】{reason}。"
+        "请重新完整输出本批的合法 JSON 对象（不要代码围栏或多余文字）。"
+    )
+
+
 def call_agent_json_batched(
     caller: AgentCaller,
     agent: str,
@@ -778,11 +807,19 @@ def call_agent_json_batched(
       对每批结果做批内校验；返回错误消息即判定不合格 → **只重发该批**（带「上次缺失 X，
       请补全」提示），最多 batch_retries 次；重试仍不合格则汇总报错（含批次号 + 缺失项）。
       校验通过（None）则收下本批。缺省 None = 不做批内校验（向后兼容）。
+    - 批内重试预算（S2d）：**调用级失败与校验不合格共用同一 batch_retries 预算**——
+      每轮尝试 = 一次本批 call_agent_json（调用级失败或校验不合格都消耗一轮），
+      故单批最多 batch_retries + 1 轮（每轮内部仍按 retries 做解析重试，两层独立）；
+      最坏轮数可预测，不因两类失败叠加而翻倍；两类失败交替时，末次失败原因决定汇总消息。
+    - 调用级失败重试（S2d）：本批 call_agent_json 抛异常（空响应 / JSONParseError /
+      批级 RuntimeError 等）**只重发本批**，重试提示带「上次失败：输出为空 / 解析失败」
+      帮助模型自纠；重试仍失败 → RuntimeError 汇总（含批次号 + 原因 + 已完成批次）。
+      背景：单批非确定性空响应（同 prompt 复跑偶发）不再拖垮整站。
     - 失败策略（不静默降级）：
-      * 单批调用失败 → RuntimeError 标注「第 k/N 批」+ 已完成批次（可定位到具体批次）
+      * 单批调用失败（重试耗尽）→ RuntimeError 标注「第 k/N 批」+ 原因 + 已完成批次
       * 单批批内校验反复不合格 → RuntimeError 标注「第 k/N 批、缺失项、已完成批次」
-      * NoKeyError 等用户可操作异常 → **原样上抛**，不包装（否则各站 main() 的
-        NoKeyError 分支走不到，用户看不到「未配 key / 用 --demo」提示）
+      * NoKeyError 等用户可操作异常 → **原样上抛**，不重试也不包装（否则各站 main() 的
+        NoKeyError 分支走不到，用户看不到「未配 key / 用 --demo」提示；且配置问题重试无意义）
       * merge 阶段失败 → RuntimeError 标注「merge 阶段、涉及全部 N 批」
         （merge_fn 合并全部批次后才发现问题，无法再定位到单个批次）
     """
@@ -793,23 +830,30 @@ def call_agent_json_batched(
     counter = count_fn or _count_batch_items
     results: list[Any] = []
     for idx, user_prompt in enumerate(batches, start=1):
-        # 批内校验 + 重试：不合格只重发本批（batch_retries 次，带缺失项提示）
+        # 批内循环：调用级失败 / 校验不合格都只重发本批，共用 batch_retries 预算
         attempt_prompt = user_prompt
         result: Any = None
-        last_verr: str | None = None
+        last_verr: str | None = None      # 校验不合格原因（重试耗尽时汇总用）
+        last_call_exc: Exception | None = None  # 调用级失败异常（重试耗尽时汇总用）
         for attempt in range(batch_retries + 1):
+            # 1) 本批调用：NoKeyError 原样上抛；其它异常纳入重试（S2d）
             try:
                 result = call_agent_json(caller, agent, soul_name, attempt_prompt, retries=retries)
             except NoKeyError:
                 # 用户可操作异常（未配 DEEPSEEK_API_KEY）：原样上抛 → 各站 main() 的
                 # NoKeyError 分支给出「配置 key 或改用 --demo」的提示（ocr medium 修复）
                 raise
-            except Exception as exc:  # 批次失败：包装为带批次定位的 RuntimeError
-                done = "、".join(f"第 {i} 批" for i in range(1, idx)) or "无"
-                raise RuntimeError(
-                    f"{agent} 第 {idx}/{total} 批失败（已完成批次：{done}；"
-                    f"已成功 {len(results)} 批）：{exc}"
-                ) from exc
+            except Exception as exc:
+                last_call_exc = exc
+                last_verr = None
+                if attempt >= batch_retries:
+                    break  # 重试预算耗尽 → 循环外统一汇总（含批次号 + 原因）
+                hint = batch_failure_hint(exc)
+                print(f"[批次 {idx}/{total}] 调用失败（{hint}），重试 {attempt + 1}/{batch_retries}")
+                attempt_prompt = _batch_retry_prompt(user_prompt, f"上次失败：{hint}")
+                continue
+            last_call_exc = None
+            # 2) 批内校验：不合格同样只重发本批（共用同一重试预算）
             if batch_validator is None:
                 last_verr = None
                 break
@@ -826,10 +870,17 @@ def call_agent_json_batched(
             last_verr = verr
             if attempt < batch_retries:
                 print(f"[批次 {idx}/{total}] 校验未过（{verr}），重试 {attempt + 1}/{batch_retries}")
-                attempt_prompt = (
-                    f"{user_prompt}\n\n【注意】上次输出不合格：{verr}。"
-                    "请补全缺失项，并严格只输出一个完整合法的 JSON 对象（不要代码围栏或多余文字）。"
+                attempt_prompt = _batch_retry_prompt(
+                    user_prompt, f"上次输出不合格：{verr}。请补全缺失项"
                 )
+        if last_call_exc is not None:
+            # 调用级失败重试耗尽：汇总报错（含批次号 + 原因 + 已完成批次），不静默产出
+            done = "、".join(f"第 {i} 批" for i in range(1, idx)) or "无"
+            raise RuntimeError(
+                f"{agent} 第 {idx}/{total} 批失败（重试 {batch_retries} 次仍失败："
+                f"{batch_failure_hint(last_call_exc)}；已完成批次：{done}；"
+                f"已成功 {len(results)} 批）：{last_call_exc}"
+            ) from last_call_exc
         if last_verr is not None:
             # 批内校验反复不合格：汇总报错（含批次号 + 缺失项 + 已完成批次），不静默产出
             done = "、".join(f"第 {i} 批" for i in range(1, idx)) or "无"

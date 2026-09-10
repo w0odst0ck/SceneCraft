@@ -5,8 +5,10 @@ Agent 调用链（S2 分批：与 shoot/prompt 同源的场景边界逐场调用
   editor 按 shot_list **逐场分批**排时间线（入出帧 + 转场，对齐 script 情绪曲线），
   并标注音频落点（AudioBeat）。每批只消费本场镜头子集 + 本场 scene；
   合并时**由代码按全局镜头顺序补帧号**（参考 shoot 补 shot_id 的模式：不信模型
-  自填的跨批连续性）——start_frame / end_frame 逐镜累加、total_frames = 实际总和，
-  保证 timeline 条数与 shot_list 镜数一致且帧号连续。
+  自填的跨批连续性）——帧号为**闭区间**（入点/出点均含端点，S2d 统一）：
+  end_frame = start_frame + 帧数 - 1、下镜 start_frame = 上镜 end_frame + 1、
+  total_frames = Σ 帧数（= 末镜 end_frame + 1），保证 timeline 条数与 shot_list
+  镜数一致且帧号连续无重叠。
 输出产物：<artifacts>/<project_id>/05_edit/editing_blueprint.json
   （契约 schemas/editing_blueprint.py::EditingBlueprint，结构与字段不变）
 manifest key：edit ↔ 磁盘目录 05_edit（映射见 SKILL.md）
@@ -121,8 +123,11 @@ def _merge_editor(shot_list: ShotList, results: list[Any]) -> dict[str, Any]:
     """合并各批 editor 输出：转场/音频取模型值，帧号由代码按全局镜头顺序补全。
 
     - 不信模型自填的跨批帧号连续性（同 shoot 补 shot_id 的模式）：按 shot_list 全局
-      镜头顺序累加「单镜时长 × target_fps」补 start_frame / end_frame，
-      total_frames = 实际总和（与 shot_list 镜数、时长对齐）
+      镜头顺序累加「单镜时长 × target_fps」补 start_frame / end_frame，帧号语义为
+      **闭区间**（入点/出点均含端点，S2d 与契约字面统一）：
+        end_frame = start_frame + 帧数 - 1；下镜 start_frame = 上镜 end_frame + 1；
+        total_frames = Σ 帧数（= 末镜 end_frame + 1）
+      （半开区间风格会让下游按闭区间读时重叠 1 帧——t1 实测 SHOT_2 起点 = SHOT_1 出点）
     - 覆盖校验：任一镜缺时间线条目即明确报错，不静默产出缺镜时间线
       （t1-coffee-envtest「timeline 只出 3 条但 JSON 合法」静默缺失的根治）
     """
@@ -141,26 +146,27 @@ def _merge_editor(shot_list: ShotList, results: list[Any]) -> dict[str, Any]:
         raise RuntimeError(f"editor 分批输出缺失镜头时间线条目：{'、'.join(missing)}")
 
     timeline: list[dict[str, Any]] = []
-    frame = 0
+    frame = 0  # 下一镜入点（闭区间起点）
     for shot in shot_list.shots:
         item = entries[shot.shot_id]
         duration_frames = max(1, int(round(float(shot.duration) * fps)))
+        end_frame = frame + duration_frames - 1   # 闭区间：出点含端点（镜长 = 帧数）
         transition_in = item.get("transition_in")
         transition_out = item.get("transition_out")
         audio_event = item.get("audio_event")
         timeline.append({
             "shot_id": shot.shot_id,
             "start_frame": frame,                      # 跨批帧号由代码补，连续
-            "end_frame": frame + duration_frames,
+            "end_frame": end_frame,
             "transition_in": transition_in if isinstance(transition_in, str) and transition_in else "Cut",
             "transition_out": transition_out if isinstance(transition_out, str) and transition_out else "Cut",
             "audio_event": audio_event if isinstance(audio_event, str) and audio_event else None,
         })
-        frame += duration_frames
+        frame = end_frame + 1                          # 下镜入点 = 本镜出点 + 1（无重叠、无空档）
     return {
         "target_fps": fps,
         "timeline": timeline,
-        "total_frames": frame,                         # = 各镜实际帧数总和
+        "total_frames": frame,                         # = Σ 帧数 = 末镜 end_frame + 1
         "audio_beats": _merge_beats(results),
     }
 
@@ -170,25 +176,27 @@ def _validate_blueprint(blueprint: EditingBlueprint, shot_list: ShotList) -> Non
 
     - 覆盖：timeline 条数 == shot_list 镜数（防缺镜静默缺失——t1-coffee-envtest
       「timeline 只出 3 条但 JSON 合法」的根治）
-    - 连续性：start_frame 逐条等于上一条 end_frame（跨批帧号由代码补，必须连续）
-    - 自洽：total_frames == 末条 end_frame（= 各镜时长 × fps 的总和）
+    - 连续性（闭区间）：本镜 start_frame == 上镜 end_frame + 1（首镜 0；跨批帧号由
+      代码补，必须连续无重叠）
+    - 自洽：total_frames == 末镜 end_frame + 1（= 各镜时长 × fps 的总和）
     """
     if len(blueprint.timeline) != len(shot_list.shots):
         raise RuntimeError(
             f"editor 时间线覆盖校验失败：timeline {len(blueprint.timeline)} 条 ≠ "
             f"shot_list {len(shot_list.shots)} 镜"
         )
-    frame = 0
+    frame = 0  # 期望的下一镜入点（闭区间）
     for entry in blueprint.timeline:
         if entry.start_frame != frame:
             raise RuntimeError(
                 f"editor 时间线帧号不连续：{entry.shot_id} start_frame={entry.start_frame}，"
                 f"期望 {frame}"
             )
-        frame = entry.end_frame
+        frame = entry.end_frame + 1
     if blueprint.total_frames != frame:
         raise RuntimeError(
-            f"editor total_frames 与时间线不一致：{blueprint.total_frames} ≠ 末帧 {frame}"
+            f"editor total_frames 与时间线不一致：{blueprint.total_frames} ≠ 期望 {frame}"
+            f"（末镜出点 + 1，闭区间）"
         )
 
 
@@ -230,7 +238,7 @@ def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> Ed
         # 批内校验（S2c）：本批 timeline 覆盖本批镜头集合，缺则只重发该批（不整站挂）
         batch_validator=lambda res, idx: _batch_coverage_error(res, expected_by_batch[idx - 1]),
     )
-    # 覆盖/一致性校验：timeline 条数 == 镜数、帧号连续、total_frames == 末帧
+    # 覆盖/一致性校验：timeline 条数 == 镜数、帧号连续、total_frames == 末镜出点 + 1（闭区间）
     _validate_blueprint(result, shot_list)
     print(f"   ✅ editor：{len(result.timeline)} 条时间线 / 共 {result.total_frames} 帧")
     return result

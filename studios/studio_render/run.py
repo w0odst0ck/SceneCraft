@@ -51,7 +51,8 @@ def build_artifact(args: Any, inputs: dict[str, Any]) -> RenderPlan:
 
     shots: list[RenderShot] = []
     for entry in edit_bp.timeline:
-        duration = max(0.0, (entry.end_frame - entry.start_frame) / fps)
+        # 帧号闭区间语义（含端点）：镜长 = end - start + 1
+        duration = max(0.0, (entry.end_frame - entry.start_frame + 1) / fps)
         sp = prompt_list.prompts.get(entry.shot_id)
         shots.append(RenderShot(
             shot_id=entry.shot_id,

@@ -299,6 +299,66 @@ def test_batched_batch_retries_zero_fails_fast():
     assert len(caller.calls) == 1
 
 
+# ── call_agent_json_batched：调用级失败重试（S2d）─────────
+
+def test_batched_retries_only_failed_batch_on_call_failure(capsys):
+    """某批首次空响应（调用级失败）→ 只重发该批，合格批不重发，重试后成功（S2d）。"""
+    # retries=0 关掉 call_agent_json 内部重试 → 空响应直接冒泡到批内重试
+    caller = _BatchCaller(['{"items": [1]}', '', '{"items": [2]}'])
+    out = au.call_agent_json_batched(
+        caller, "editor", "editor", ["p1", "p2"],
+        merge_fn=lambda results: {"total": sum(len(au.as_dict(r).get("items") or []) for r in results)},
+        retries=0,
+    )
+    assert out == {"total": 2}
+    assert len(caller.calls) == 3                        # 第 2 批多发 1 次（第 1 批不重发）
+    assert caller.calls[0].startswith("p1") and caller.calls[1].startswith("p2")
+    assert caller.calls[2].startswith("p2")              # 只重发失败那批
+    assert "上次失败：输出为空" in caller.calls[2]         # 重试提示回灌失败原因，帮模型自纠
+    printed = capsys.readouterr().out
+    assert "调用失败（输出为空）" in printed and "重试 1/2" in printed
+
+
+def test_batched_retries_call_failure_with_exception():
+    """批级异常（非解析类，如网络/运行时）同样纳入批内重试，只重发该批。"""
+    caller = _BatchCaller(['{"items": [1]}', RuntimeError("网络炸"), '{"items": [2]}'])
+    out = au.call_agent_json_batched(
+        caller, "editor", "editor", ["p1", "p2"],
+        merge_fn=lambda results: {"total": sum(len(au.as_dict(r).get("items") or []) for r in results)},
+        retries=0,
+    )
+    assert out == {"total": 2}
+    assert "上次失败：调用异常（RuntimeError）" in caller.calls[2]
+
+
+def test_batched_call_failure_exhausts_retries_raises():
+    """连续调用级失败（空响应 / 非法 JSON）：重试耗尽 → 报错含批次号 + 原因 + 已完成批次。"""
+    caller = _BatchCaller(['{"items": [1]}', '', '不是 JSON', ''])
+    with pytest.raises(RuntimeError) as excinfo:
+        au.call_agent_json_batched(
+            caller, "editor", "editor", ["p1", "p2"],
+            merge_fn=lambda r: r, retries=0, batch_retries=2,
+        )
+    message = str(excinfo.value)
+    assert "第 2/2 批失败" in message and "重试 2 次仍失败" in message
+    assert "输出为空" in message                          # 最后一次调用失败原因
+    assert "已完成批次：第 1 批" in message                # 可定位：前面已成功哪些批
+    assert len(caller.calls) == 4                        # 第 1 批 1 次 + 第 2 批 batch_retries+1 次
+
+
+def test_batched_call_and_validation_share_retry_budget():
+    """调用级失败与校验不合格共用同一 batch_retries 预算：交替失败也不翻倍，末次原因定汇总。"""
+    caller = _BatchCaller(['', '{"items": []}', '{"items": []}'])
+    with pytest.raises(RuntimeError) as excinfo:
+        au.call_agent_json_batched(
+            caller, "editor", "editor", ["p1"],
+            merge_fn=lambda r: r, batch_validator=_has_items,
+            retries=0, batch_retries=2,
+        )
+    assert len(caller.calls) == 3                        # = batch_retries + 1（共用预算）
+    assert "校验未通过" in str(excinfo.value)             # 末次失败原因（校验不合格）决定汇总
+
+
 # ── demo 分镜：大场细分组不重复产出 ─────────────────────
 
 def _director_group_payload(group_index: int, group_total: int) -> str:

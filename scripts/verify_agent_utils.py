@@ -38,7 +38,7 @@ assert len(pl.prompts) == len(sl.shots)
 editor_in = json.dumps({"shot_list": json.loads(shot_list_json)}, ensure_ascii=False)
 eb = EditingBlueprint.model_validate(au.safe_parse_json(au.demo_output("editor", editor_in)))
 assert len(eb.timeline) == len(sl.shots)
-assert eb.total_frames == eb.timeline[-1].end_frame
+assert eb.total_frames == eb.timeline[-1].end_frame + 1  # 闭区间：总帧数 = 末镜出点 + 1
 
 critic_in = json.dumps({"stage": "script", "artifact": json.loads(script_json)}, ensure_ascii=False)
 qr = QcReport.model_validate(au.safe_parse_json(au.demo_output("critic", critic_in)))

@@ -92,7 +92,7 @@ def test_editor_batches_tolerate_unknown_scene():
 # ── 2) 合并：代码补跨批帧号（不信模型自填）────────────────
 
 def test_merge_editor_fills_frames_from_code():
-    """帧号一律由代码按镜头顺序补：模型给的错乱帧号被覆盖，转场/音频保留，音轨落点合并。"""
+    """帧号一律由代码按镜头顺序补（闭区间）：模型给的错乱帧号被覆盖，转场/音频保留，音轨落点合并。"""
     shot_list = _shot_list([("SCENE_1", 2), ("SCENE_2", 1)])  # 3 镜 × 2s × 24fps = 48 帧/镜
     results = [
         {  # 第 1 批：模型给了错乱帧号（应被覆盖）
@@ -113,9 +113,10 @@ def test_merge_editor_fills_frames_from_code():
     merged = edit._merge_editor(shot_list, results)
 
     assert merged["target_fps"] == 24
+    # 闭区间（S2d）：出点含端点，下镜入点 = 上镜出点 + 1 → 跨批连续、无重叠
     assert [(e["start_frame"], e["end_frame"]) for e in merged["timeline"]] == [
-        (0, 48), (48, 96), (96, 144)]                    # 跨批帧号连续、无重叠
-    assert merged["total_frames"] == 144                 # = 3 镜 × 48 帧
+        (0, 47), (48, 95), (96, 143)]
+    assert merged["total_frames"] == 144                 # = 3 镜 × 48 帧 = 末镜 end + 1
     assert [e["transition_out"] for e in merged["timeline"]][:1] == ["Cross Dissolve"]
     assert merged["timeline"][1]["transition_in"] == "Fade"
     assert merged["timeline"][2]["transition_in"] == "Cut"   # 缺省回退
@@ -154,11 +155,11 @@ def test_build_artifact_demo_covers_all_shots():
     assert len(blueprint.timeline) == len(shot_list.shots) == 9
     frame = 0
     for entry in blueprint.timeline:
-        assert entry.start_frame == frame          # 帧号连续
-        frame = entry.end_frame
+        assert entry.start_frame == frame          # 闭区间连续：入点 == 上镜出点 + 1
+        frame = entry.end_frame + 1
     expected_total = sum(max(1, int(round(s.duration * blueprint.target_fps)))
                          for s in shot_list.shots)
-    assert blueprint.total_frames == frame == expected_total
+    assert blueprint.total_frames == frame == expected_total   # = Σ 帧数 = 末镜 end + 1
 
 
 def test_build_artifact_missing_coverage_raises():
@@ -208,6 +209,32 @@ def test_build_artifact_retries_incomplete_batch(capsys):
     assert "校验未过" in capsys.readouterr().out       # 批内重试日志可见
 
 
+def test_build_artifact_retries_batch_on_empty_response(capsys):
+    """某批首次空响应（调用级失败，S2d）→ 只重发该批并成功，不整站中止。"""
+    shot_list = _shot_list([("SCENE_1", 2), ("SCENE_2", 1)])
+    script = _script(["SCENE_1", "SCENE_2"])
+
+    def responder(index, prompt):
+        # 第 2 批：第 1 次空响应（call 2）→ call_agent_json 内部重试仍空（call 3）
+        # → 批内调用级重试（call 4）补齐；第 1 批（call 1）不受影响、不重发。
+        if index in (2, 3):
+            return ""
+        if index == 4:
+            return json.dumps({"target_fps": 24, "timeline": [
+                {"shot_id": "SHOT_3", "transition_in": "Cut", "transition_out": "Cut"}],
+                "audio_beats": []})
+        return json.dumps({"target_fps": 24, "timeline": [
+            {"shot_id": "SHOT_1", "transition_in": "Cut", "transition_out": "Cut"},
+            {"shot_id": "SHOT_2", "transition_in": "Cut", "transition_out": "Cut"}],
+            "audio_beats": []})
+
+    caller = _FakeEditorCaller(responder)
+    blueprint = edit.build_artifact(argparse.Namespace(), {"shoot": shot_list, "script": script}, caller)
+    assert [e.shot_id for e in blueprint.timeline] == ["SHOT_1", "SHOT_2", "SHOT_3"]
+    assert len(caller.calls) == 4                      # 第 2 批共 3 次（内部重试 1 + 批内重试 1）
+    assert "调用失败（输出为空）" in capsys.readouterr().out   # 批内调用级重试日志可见
+
+
 def test_batch_coverage_error_reports_missing_and_dict_safe():
     """批内覆盖校验：缺项返回含 shot_id 的消息；顶层 list / 非 dict 项不炸（dict-safe）。"""
     assert edit._batch_coverage_error(
@@ -237,13 +264,14 @@ def test_build_artifact_no_key_message_preserved(monkeypatch, tmp_path):
 # ── 4) 产物覆盖/一致性校验（分批合并后最后一道防线）────────
 
 def test_validate_blueprint_rejects_inconsistencies():
-    """条数不符 / 帧号不连续 / total_frames 与末帧不一致 均报错；正常产物放行。"""
+    """条数不符 / 帧号不连续 / total_frames 与末帧不一致 均报错；正常产物（闭区间）放行。"""
     shot_list = _shot_list([("SCENE_1", 2)])
+    # 闭区间：每镜 48 帧 → SHOT_1 0-47、SHOT_2 48-95、total = 96
     ok = EditingBlueprint.model_validate({
         "target_fps": 24,
         "timeline": [
-            {"shot_id": "SHOT_1", "start_frame": 0, "end_frame": 48},
-            {"shot_id": "SHOT_2", "start_frame": 48, "end_frame": 96},
+            {"shot_id": "SHOT_1", "start_frame": 0, "end_frame": 47},
+            {"shot_id": "SHOT_2", "start_frame": 48, "end_frame": 95},
         ],
         "total_frames": 96,
     })
@@ -254,17 +282,29 @@ def test_validate_blueprint_rejects_inconsistencies():
     with pytest.raises(RuntimeError, match="覆盖校验失败"):
         edit._validate_blueprint(short, shot_list)
 
-    # 帧号不连续（跨批补帧出错）
+    # 帧号不连续（跨批补帧出错）：SHOT_2 入点应为 SHOT_1 出点 + 1 = 48，实际 60
     gap = EditingBlueprint.model_validate({
         "target_fps": 24,
         "timeline": [
-            {"shot_id": "SHOT_1", "start_frame": 0, "end_frame": 48},
-            {"shot_id": "SHOT_2", "start_frame": 60, "end_frame": 96},
+            {"shot_id": "SHOT_1", "start_frame": 0, "end_frame": 47},
+            {"shot_id": "SHOT_2", "start_frame": 60, "end_frame": 95},
         ],
         "total_frames": 96,
     })
     with pytest.raises(RuntimeError, match="帧号不连续"):
         edit._validate_blueprint(gap, shot_list)
+
+    # 半开区间风格（下镜入点 = 上镜出点，重叠 1 帧）也判不连续
+    overlap = EditingBlueprint.model_validate({
+        "target_fps": 24,
+        "timeline": [
+            {"shot_id": "SHOT_1", "start_frame": 0, "end_frame": 48},
+            {"shot_id": "SHOT_2", "start_frame": 48, "end_frame": 95},
+        ],
+        "total_frames": 96,
+    })
+    with pytest.raises(RuntimeError, match="帧号不连续"):
+        edit._validate_blueprint(overlap, shot_list)
 
     # total_frames 与末帧不一致
     bad_total = ok.model_copy(update={"total_frames": 100})
