@@ -192,6 +192,23 @@ def _validate_blueprint(blueprint: EditingBlueprint, shot_list: ShotList) -> Non
         )
 
 
+def _batch_coverage_error(result: Any, expected_ids: list[str]) -> str | None:
+    """批内覆盖校验（S2c）：本批 timeline 条目须覆盖本批应出镜头集合，缺则返回错误消息。
+
+    返回 None = 本批合格；返回 str = 本批不合格（含缺失 shot_id），触发批内重试。
+    结果可能是顶层 list（raw safe_parse_json），一律走 as_dict 做 dict-safe 访问。
+    """
+    got = {
+        item.get("shot_id")
+        for item in (as_dict(result).get("timeline") or [])
+        if isinstance(item, dict)
+    }
+    missing = [sid for sid in expected_ids if sid not in got]
+    if missing:
+        return f"缺 {len(missing)} 条时间线条目：{'、'.join(missing)}"
+    return None
+
+
 def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> EditingBlueprint:
     """editor：shot_list + script → 按同源场景边界逐场分批排时间线 → 合并补帧号。"""
     shot_list: ShotList = inputs["shoot"]  # type: ignore[assignment]
@@ -200,6 +217,8 @@ def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> Ed
     # 批次边界与 shoot/prompt 同源（逐场；大场按镜组细分）：每批本场镜头子集 + 本场 scene
     batches = _editor_batches(script, shot_list)
     print(f"   🎞 editor 分批：{len(batches)} 批（与 shoot/prompt 同源场景边界）")
+    # 批内覆盖：本批应出镜头集合（按批内镜头顺序），供 batch_validator 逐批校验
+    expected_by_batch = [[s.shot_id for s in batch["shots"]] for batch in batches]
     # 注入 EditingBlueprint 契约示例（timeline / audio_beats），约束真实输出格式
     contract = json.dumps(EditingBlueprint.demo().model_dump(mode="json"), ensure_ascii=False)
     result = call_agent_json_batched(
@@ -208,6 +227,8 @@ def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> Ed
         merge_fn=lambda results: _merge_editor(shot_list, results),
         model_class=EditingBlueprint,
         count_fn=lambda res: count_batch_key(res, "timeline"),  # dict-safe（可能顶层 list）
+        # 批内校验（S2c）：本批 timeline 覆盖本批镜头集合，缺则只重发该批（不整站挂）
+        batch_validator=lambda res, idx: _batch_coverage_error(res, expected_by_batch[idx - 1]),
     )
     # 覆盖/一致性校验：timeline 条数 == 镜数、帧号连续、total_frames == 末帧
     _validate_blueprint(result, shot_list)

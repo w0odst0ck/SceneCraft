@@ -162,7 +162,7 @@ def test_build_artifact_demo_covers_all_shots():
 
 
 def test_build_artifact_missing_coverage_raises():
-    """某批漏镜（模型输出空 timeline）→ 合并阶段（_merge_editor）缺镜校验报错，不静默缺镜。"""
+    """某批反复漏镜（重试仍空）→ 批内校验汇总报错（含缺失 shot_id），不静默缺镜。"""
     shot_list = _shot_list([("SCENE_1", 2), ("SCENE_2", 1)])
     script = _script(["SCENE_1", "SCENE_2"])
 
@@ -176,12 +176,45 @@ def test_build_artifact_missing_coverage_raises():
                 ],
                 "audio_beats": [],
             })
-        return json.dumps({"target_fps": 24, "timeline": [], "audio_beats": []})  # 第 2 批漏镜
+        return json.dumps({"target_fps": 24, "timeline": [], "audio_beats": []})  # 第 2 批反复漏镜
 
     with pytest.raises(RuntimeError) as excinfo:
         edit.build_artifact(argparse.Namespace(), {"shoot": shot_list, "script": script},
                             _FakeEditorCaller(responder))
     assert "SHOT_3" in str(excinfo.value)
+
+
+def test_build_artifact_retries_incomplete_batch(capsys):
+    """某批首次漏镜 → 批内重试该批（补全后通过），不整站失败（S2c）。"""
+    shot_list = _shot_list([("SCENE_1", 2), ("SCENE_2", 1)])
+    script = _script(["SCENE_1", "SCENE_2"])
+
+    def responder(index, prompt):
+        # 第 2 批（SCENE_2）首次输出空 timeline（触发批内重试）；重发时（第 3 次调用）补齐
+        if index == 3:
+            return json.dumps({"target_fps": 24, "timeline": [
+                {"shot_id": "SHOT_3", "transition_in": "Cut", "transition_out": "Cut"}],
+                "audio_beats": []})
+        if index == 2:
+            return json.dumps({"target_fps": 24, "timeline": [], "audio_beats": []})
+        return json.dumps({"target_fps": 24, "timeline": [
+            {"shot_id": "SHOT_1", "transition_in": "Cut", "transition_out": "Cut"},
+            {"shot_id": "SHOT_2", "transition_in": "Cut", "transition_out": "Cut"}],
+            "audio_beats": []})
+
+    blueprint = edit.build_artifact(argparse.Namespace(), {"shoot": shot_list, "script": script},
+                                    _FakeEditorCaller(responder))
+    assert [e.shot_id for e in blueprint.timeline] == ["SHOT_1", "SHOT_2", "SHOT_3"]
+    assert "校验未过" in capsys.readouterr().out       # 批内重试日志可见
+
+
+def test_batch_coverage_error_reports_missing_and_dict_safe():
+    """批内覆盖校验：缺项返回含 shot_id 的消息；顶层 list / 非 dict 项不炸（dict-safe）。"""
+    assert edit._batch_coverage_error(
+        {"timeline": [{"shot_id": "SHOT_1"}, {"shot_id": "SHOT_2"}]}, ["SHOT_1", "SHOT_2"]) is None
+    err = edit._batch_coverage_error({"timeline": [{"shot_id": "SHOT_1"}]}, ["SHOT_1", "SHOT_2"])
+    assert err is not None and "SHOT_2" in err
+    assert edit._batch_coverage_error([1, 2, 3], ["SHOT_1"]) is not None   # 顶层 list 安全
 
 
 def test_build_artifact_no_key_message_preserved(monkeypatch, tmp_path):

@@ -236,6 +236,69 @@ def test_batched_merge_validation_failure_reports_scope():
     assert "merge 阶段" in message and "全部 2 批" in message
 
 
+# ── call_agent_json_batched：批内校验 + 批内重试（S2c）────
+
+def _has_items(result, idx):
+    """批内校验替身：本批 dict 有非空 items → 合格（None），否则返回缺失说明。"""
+    return None if au.as_dict(result).get("items") else "缺 1 条"
+
+
+def test_batched_batch_validator_retries_only_bad_batch(capsys):
+    """batch_validator 不合格的批只重发该批：合格批不受影响，重发后通过。"""
+    # 第 1 批正常；第 2 批首次 items 空（校验未过）→ 只重发第 2 批 → 补齐
+    caller = _BatchCaller(['{"items": [1]}', '{"items": []}', '{"items": [2]}'])
+    out = au.call_agent_json_batched(
+        caller, "editor", "editor", ["p1", "p2"],
+        merge_fn=lambda results: {"total": sum(len(au.as_dict(r).get("items") or []) for r in results)},
+        batch_validator=_has_items,
+    )
+    assert out == {"total": 2}
+    assert len(caller.calls) == 3                        # 只第 2 批多发 1 次（合格批不重发）
+    assert "不合格" in caller.calls[2]                    # 重试提示带「不合格」说明
+    printed = capsys.readouterr().out
+    assert "校验未过" in printed and "重试 1/2" in printed  # 进度日志：批次内重试可见
+
+
+def test_batched_batch_validator_receives_batch_index():
+    """batch_validator 收到 1-based 批序号（调用方据此定位本批应出内容）。"""
+    seen: list[int] = []
+
+    def _record(result, idx):
+        seen.append(idx)
+        return None
+
+    caller = _BatchCaller(['{"items": [1]}', '{"items": [2]}'])
+    au.call_agent_json_batched(caller, "editor", "editor", ["p1", "p2"],
+                               merge_fn=lambda r: r, batch_validator=_record)
+    assert seen == [1, 2]
+
+
+def test_batched_batch_validator_exhausts_retries_raises():
+    """批内校验反复不合格：汇总报错含批次号 + 缺失项，且总尝试 == batch_retries + 1。"""
+    caller = _BatchCaller(['{"items": []}', '{"items": []}', '{"items": []}'])
+    with pytest.raises(RuntimeError) as excinfo:
+        au.call_agent_json_batched(
+            caller, "editor", "editor", ["p1"],
+            merge_fn=lambda r: r,
+            batch_validator=lambda res, idx: "缺 SHOT_9",
+        )
+    message = str(excinfo.value)
+    assert "第 1/1 批" in message and "缺 SHOT_9" in message
+    assert "重试 2 次仍不合格" in message
+    assert len(caller.calls) == 3                        # 总尝试 = 默认 batch_retries(2) + 1
+
+
+def test_batched_batch_retries_zero_fails_fast():
+    """batch_retries=0：批内校验不合格时不重发，立即汇总报错。"""
+    caller = _BatchCaller(['{"items": []}'])
+    with pytest.raises(RuntimeError):
+        au.call_agent_json_batched(
+            caller, "editor", "editor", ["p1"],
+            merge_fn=lambda r: r, batch_validator=_has_items, batch_retries=0,
+        )
+    assert len(caller.calls) == 1
+
+
 # ── demo 分镜：大场细分组不重复产出 ─────────────────────
 
 def _director_group_payload(group_index: int, group_total: int) -> str:
