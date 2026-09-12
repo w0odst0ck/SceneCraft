@@ -50,7 +50,8 @@ OUTPUT_FILES = {
 
 
 def run_studio(key: str, project: str, artifacts_dir: str, concept: str | None,
-               demo: bool, material_tags: str | None = None) -> subprocess.CompletedProcess:
+               demo: bool, material_tags: str | None = None,
+               render: bool = False, render_limit: int | None = None) -> subprocess.CompletedProcess:
     """以子进程运行一个工作室 run.py，输出透传给父进程。"""
     cmd = [
         sys.executable,
@@ -62,6 +63,11 @@ def run_studio(key: str, project: str, artifacts_dir: str, concept: str | None,
         cmd += ["--concept", concept]
         if material_tags:  # 素材注入仅 story 站消费（story-materials pick）
             cmd += ["--material-tags", material_tags]
+    if key == "render":  # 真实渲染开关仅 render 站消费（镜像 --material-tags 的转发写法）
+        if render:
+            cmd += ["--render"]
+        if render_limit is not None:
+            cmd += ["--render-limit", str(render_limit)]
     if demo:
         cmd += ["--demo"]
     return subprocess.run(cmd, cwd=ROOT)
@@ -79,6 +85,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--demo", action="store_true",
                         help="demo 模式：不调用 DeepSeek，使用内置演示输出（无需 API key）")
     parser.add_argument("--qc", action="store_true", help="全链跑完后追加 QC 质检（默认检 script）")
+    parser.add_argument("--render", action="store_true",
+                        help="render 站真实本地渲染（ComfyUI + LTX-Video 2B）；默认只出渲染计划")
+    parser.add_argument("--render-limit", type=int, default=None,
+                        help="render 站仅渲染前 N 镜（其余保持 pending）；需配合 --render")
     args = parser.parse_args(argv)
 
     # 两环境启动提示（run_pipeline 以子进程逐站调 run.py，env 不跨进程共享——
@@ -95,13 +105,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"   概念: {args.concept}")
     print(f"   素材: {args.material_tags or '（未指定）'}")
     print(f"   模式: {'Demo（无 API 调用）' if args.demo else 'DeepSeek 真实调用'}")
+    print(f"   渲染: {'真实本地渲染（LTX-Video 2B）' if args.render else '仅出渲染计划（不渲染）'}"
+          + (f"，限前 {args.render_limit} 镜" if args.render and args.render_limit else ""))
     print(f"{'=' * 60}\n")
 
     start = CHAIN.index(args.from_stage)
     pending = CHAIN[start:]
     for key in pending:
         result = run_studio(key, args.project, args.artifacts_dir, args.concept, args.demo,
-                            args.material_tags)
+                            args.material_tags, args.render, args.render_limit)
         if result.returncode != 0:
             print(f"\n❌ 全链中止：{key} 站失败（已完成产物已保留，可用 "
                   f"--from {key} 修复后续跑）")
