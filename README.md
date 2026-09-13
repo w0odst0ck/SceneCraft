@@ -2,6 +2,9 @@
 
 AI 短剧全栈管线 — 从概念到可渲染交付物。
 
+> 📖 **产品说明书**（工作流 / 命令速查 / 迭代方向 / 运维）：[`docs/产品说明书.md`](docs/产品说明书.md)
+> 🏭 架构决策：[`plan/多工作室架构-v2.md`](plan/多工作室架构-v2.md) · 🧭 路线图：[`plan/roadmap.md`](plan/roadmap.md) · 🧪 测试台账：[`test-results/README.md`](test-results/README.md)
+
 ```
 概念 → ai-short-drama (9 Agent 创意工厂) → openmontage-bridge → OpenMontage → 最终视频
 ```
