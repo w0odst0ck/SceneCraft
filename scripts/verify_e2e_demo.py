@@ -12,7 +12,7 @@ from schemas.prompt_list import PromptList
 from schemas.editing_blueprint import EditingBlueprint
 from schemas.render_plan import RenderPlan
 
-PROJECT = Path("artifacts/demo-e2e")
+PROJECT = Path("test-results/demo-e2e")  # 测试产物统一在 test-results/（2026-09-13 迁移）
 
 # 1) 6 类产物存在 + 契约校验
 contracts = {
