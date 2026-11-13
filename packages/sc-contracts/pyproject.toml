@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sc-contracts"
+version = "0.1.0"
+description = "SceneCraft 产物契约（pydantic v2）：带血缘字段的剧本/分镜/提示词模型"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

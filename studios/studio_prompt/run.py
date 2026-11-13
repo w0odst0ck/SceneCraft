@@ -23,16 +23,15 @@ if str(ROOT) not in sys.path:
 from schemas.prompt_list import PromptList
 from schemas.shot_list import ShotList
 from schemas.visual_bible import VisualBible
+from sc_prompt import build_prompt_batches, merge_prompt_lists
 from studios import common
 from studios.agent_utils import (
     JSONParseError,
     NoKeyError,
     AgentCaller,
     append_output_contract,
-    as_dict,
     call_agent_json_batched,
     count_batch_key,
-    group_shots_by_scene,
 )
 
 STUDIO_KEY = "prompt"
@@ -45,24 +44,12 @@ SOUL_DIR = Path(__file__).parent / "agents"  # prompter.md
 
 
 def _merge_prompt_lists(results: list[Any]) -> dict[str, Any]:
-    """合并各批 prompter 输出：prompts 按 shot_id 汇总，model / aspect_ratio 取首个非空值。"""
+    """合并各批 prompter 输出：prompts 按 shot_id 汇总，model / aspect_ratio 取首个非空值。
+
+    实现已抽到 sc_prompt.merge_prompt_lists（M0）；此处保留默认值来源。
+    """
     demo = PromptList.demo()
-    prompts: dict[str, Any] = {}
-    model: str | None = None
-    aspect_ratio: str | None = None
-    for res in results:
-        # 类型防护：raw safe_parse_json 可能返回顶层 list（非 dict）→ 取空 dict 跳过
-        data = as_dict(res)
-        batch_prompts = data.get("prompts")
-        if isinstance(batch_prompts, dict):
-            prompts.update(batch_prompts)
-        model = model or data.get("model")
-        aspect_ratio = aspect_ratio or data.get("aspect_ratio")
-    return {
-        "model": model or demo.model,
-        "aspect_ratio": aspect_ratio or demo.aspect_ratio,
-        "prompts": prompts,
-    }
+    return merge_prompt_lists(results, demo.model, demo.aspect_ratio)
 
 
 def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> PromptList:
@@ -71,22 +58,13 @@ def build_artifact(args: Any, inputs: dict[str, Any], caller: AgentCaller) -> Pr
     vb: VisualBible = inputs["art"]  # type: ignore[assignment]
 
     # 批次边界与 shoot 站同源（逐场）：每批本场镜头子集 + visual_bible 全量 + PromptList 契约
-    scene_groups = group_shots_by_scene(shot_list)
+    # 批次构造已抽到 sc_prompt.build_prompt_batches（M0），拼接顺序与搬迁前逐字节一致
+    demo = PromptList.demo()
+    contract = json.dumps(demo.model_dump(mode="json"), ensure_ascii=False)
+    scene_groups, batches = build_prompt_batches(
+        shot_list, vb, contract, append_contract=append_output_contract
+    )
     print(f"   ✍ prompter 分批：{len(scene_groups)} 批（与 shoot 同源场景边界）")
-    contract = json.dumps(PromptList.demo().model_dump(mode="json"), ensure_ascii=False)
-    batches = [
-        append_output_contract(
-            json.dumps({
-                "shot_list": {
-                    "target_shots": len(shots),
-                    "shots": [s.model_dump(mode="json") for s in shots],
-                },
-                "visual_bible": vb.model_dump(mode="json"),
-            }, ensure_ascii=False),
-            contract,
-        )
-        for _, shots in scene_groups
-    ]
     result = call_agent_json_batched(
         caller, "prompter", "prompter", batches,
         merge_fn=_merge_prompt_lists,

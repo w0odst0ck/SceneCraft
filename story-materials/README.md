@@ -7,16 +7,18 @@
 ```
 story-materials/
   README.md          # 本文件（使用说明 + 版权红线，先用它）
-  templates/         # 6 类模板：复制→填写→存 cards/
   cards/             # 一张卡一文件（<id>.md，如 2026-08-22-001.md）
   scripts/
-    pick_materials.py  # 纯 stdlib：筛选→排序→拼注入文本（无 PyYAML）
+    pick_materials.py  # 薄转发层（M0 抽包）：实现见 packages/sc-materials/src/sc_materials/pick.py
 ```
+
+> M0 抽包后，6 类模板随包分发到 `packages/sc-materials/src/sc_materials/templates/`；
+> `scripts/pick_materials.py` 保留为薄转发层，旧路径与 CLI 用法不变。
 
 ## 怎么积累素材
 
 1. 你积累一段素材（一句话、一个生活观察、一段情节构思都行）。
-2. 从 `templates/` 选最贴近的一类（setting 设定 / character 人物 / beat 桥段 / theme 主题 / line 金句 / detail 细节），复制到 `cards/`，改名为 `<id>.md`（`YYYY-MM-DD-NNN`，全库唯一）。
+2. 从 `packages/sc-materials/src/sc_materials/templates/` 选最贴近的一类（setting 设定 / character 人物 / beat 桥段 / theme 主题 / line 金句 / detail 细节），复制到 `cards/`，改名为 `<id>.md`（`YYYY-MM-DD-NNN`，全库唯一）。
 3. 按模板填齐字段：frontmatter（id/type/tags/status/source/priority）+ 三个正文节（核心设定/可复用点/版权备注）。
 4. `tags` 至少 1 个，**建议打 2–4 个语义近邻 tag**（如「赛博朋克, 悬疑, 雨夜」），因为匹配是精确交集，同义不同词会漏命中（如「赛博」≠「赛博朋克」）。
 
