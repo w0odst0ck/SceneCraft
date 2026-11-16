@@ -1,6 +1,6 @@
 """Script — 剧本产物（Studio Story 输出）
 
-复用 v1 ai-short-drama/schemas/script.py 的字段思路
+历史参考：ai-short-drama（v1，已弃用）schemas/script.py 的字段思路
 （title / logline / scenes / emotional_curve），顶层独立实现，字段可扩展。
 
 Phase B.1 契约修正：真实 DeepSeek 输出剧本对白为多轮对话结构

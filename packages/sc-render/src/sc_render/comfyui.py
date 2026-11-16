@@ -36,8 +36,29 @@ from urllib.parse import quote
 # ── 端点与路径默认值（可用环境变量覆盖，便于换机器/换环境）──
 DEFAULT_BASE_URL = os.environ.get("SCENE_COMFY_BASE_URL", "http://127.0.0.1:8188")
 OLLAMA_BASE = os.environ.get("SCENE_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
+
 # ComfyUI 产物落盘目录（本地 copy 源）；取不到时改用 /view API 下载（见 _download_outputs）
-DEFAULT_COMFY_OUTPUT = os.environ.get("SCENE_COMFY_OUTPUT", "/home/l/opt/ComfyUI/output")
+def _default_comfy_output() -> str:
+    """推导 ComfyUI 产物目录，避免把某台机器的用户名写死。
+
+    优先级：SCENE_COMFY_OUTPUT → 常见安装位置 `<home>/opt/ComfyUI/output`（存在才用）
+    → 兜底 `<home>/comfyui_output`（**不依赖 cwd**，避免不同入口解析出不同目录）。
+
+    注：远程/容器部署通常需要显式设置 SCENE_COMFY_OUTPUT；设置错误只会导致本地 copy
+    失败，此时自动回退 `/view` API 下载（见 _download_outputs）。
+    """
+    env = os.environ.get("SCENE_COMFY_OUTPUT", "").strip()
+    if env:
+        return env
+    standard = Path.home() / "opt" / "ComfyUI" / "output"
+    if standard.is_dir():
+        return str(standard)
+    # 稳定兜底：基于用户主目录（与进程启动目录无关）
+    return str(Path.home() / "comfyui_output")
+
+
+DEFAULT_COMFY_OUTPUT = _default_comfy_output()
 
 # ── 模型与默认生成参数（LTX-Video 2B v0.9.5，checkpoint 自带 VAE，另需 t5xxl encoder）──
 DEFAULT_CKPT = os.environ.get("SCENE_RENDER_CKPT", "ltx-video-2b-v0.9.5.safetensors")
@@ -262,7 +283,7 @@ def _download_outputs(result: dict, out_dir: Path, base_url: str,
 
     返回 (落盘路径列表, 错误描述列表)；单个产物失败不阻断其它，错误交给调用方并入报错信息。
     """
-    root = Path(comfy_output or DEFAULT_COMFY_OUTPUT)
+    root = Path(comfy_output or DEFAULT_COMFY_OUTPUT)  # 单一来源，避免二次推导不一致
     saved: list[Path] = []
     errors: list[str] = []
     for node_out in (result.get("outputs") or {}).values():

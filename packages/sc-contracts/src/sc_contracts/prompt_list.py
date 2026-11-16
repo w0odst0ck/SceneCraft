@@ -1,6 +1,6 @@
 """PromptList — 提示词列表产物（Studio Prompt 输出）
 
-参考 v1 ai-short-drama/schemas/dual_track.py 的 ShotPrompt 设计：
+历史参考：ai-short-drama（v1，已弃用）schemas/dual_track.py 的 ShotPrompt 设计：
 shot_id + 六要素完整提示词（主体 / 动作 / 环境 / 光照 / 运镜 / 情绪）。
 """
 from __future__ import annotations

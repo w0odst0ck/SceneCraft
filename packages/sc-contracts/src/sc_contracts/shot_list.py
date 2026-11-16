@@ -1,6 +1,6 @@
 """ShotList — 分镜表产物（Studio Shoot 输出）
 
-参考 v1 ai-short-drama/schemas/shot_list.py 的 ShotParameterCard 字段设计
+历史参考：ai-short-drama（v1，已弃用）schemas/shot_list.py 的 ShotParameterCard 字段设计
 （shot_id / scene_id / duration / subject / action / emotion / environment /
  lighting / camera_angle / camera_movement / focal_length / narrative_purpose）。
 """

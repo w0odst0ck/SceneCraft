@@ -5,8 +5,8 @@ count_batch_key / as_dict / group_shots_by_scene / JSONParseError / NoKeyError�
 `packages/sc-batching`（`sc_batching`），本模块从包导入并再导出，旧 import 路径不变；
 本文件保留宿主相关部分：两环境解析、call_deepseek、demo 输出、AgentCaller、契约注入。
 
-从 v1 ai-short-drama/orchestration/pipeline.py 的 call_deepseek / AGENT_MODEL_MAP /
-demo 分支逻辑参考移植并增强（不 import v1）：
+历史参考：ai-short-drama（v1，已弃用）orchestration/pipeline.py 的 call_deepseek /
+AGENT_MODEL_MAP / demo 分支逻辑，参考移植并增强（不 import v1）：
 
 - call_deepseek(): 真实 LLM 调用——按两环境路由：test（SCENE_ENV=test）走本地 ollama
   （¥0 开发/链路验证，超时放宽 300s），prod（缺省）走 DeepSeek（读 key → 超时 60s →
@@ -28,6 +28,10 @@ DeepSeek 计价参考（2025-06 官方 deepseek-chat 按量计费，单位 USD /
 简化取整，供 manifest.cost_usd 粗算，非精确账单）：
     input  0.0014 USD / 1K tokens
     output 0.0028 USD / 1K tokens
+
+demo 输出（`_demo_*` / `demo_output`）：**仅服务主仓无 key 回归测试，不属于任何包**。
+它们与主仓契约及站内分批输入形态强绑定（例如分镜细分组、剪辑帧号口径），
+因此留在宿主而不下沉到 `packages/`；包使用者应自己提供 Agent 调用器或演示数据。
 """
 from __future__ import annotations
 
@@ -53,6 +57,21 @@ from sc_batching import (
     safe_parse_json,
     set_max_tokens_provider,
 )
+
+# ── .env 加载（M1：模块导入时一次性载入，供下文所有 os.getenv 生效）──
+# 优先级：环境变量 > 仓库根 .env > 遗留 ai-short-drama/.env（v1，已弃用）。
+# override=False：已存在的环境变量优先，不会被文件覆盖。
+# SCENE_SKIP_DOTENV=1 时完全跳过（测试/CI 用：保证结果不随本机 .env 变化）。
+_ROOT_DIR = Path(__file__).resolve().parents[1]
+_ENV_CANDIDATES: tuple[Path, ...] = (
+    _ROOT_DIR / ".env",                      # 标准位置（见仓库根 .env.example）
+    _ROOT_DIR / "ai-short-drama" / ".env",   # v1 遗留位置，兼容兜底
+)
+_ENV_LOADED: Path | None = None
+if os.getenv("SCENE_SKIP_DOTENV", "").strip() not in ("1", "true", "yes"):
+    _ENV_LOADED = next((p for p in _ENV_CANDIDATES if p.exists()), None)
+    if _ENV_LOADED is not None:
+        load_dotenv(_ENV_LOADED, override=False)
 
 # ── 两环境配置（唯一入口 SCENE_ENV=test|prod）────────────
 # 语义：test = 本地 ollama（¥0 开发/链路验证）；prod = DeepSeek（成品质量）。
@@ -152,20 +171,20 @@ PRICE_OUTPUT_PER_1K = 0.0028
 
 # ── Key 读取 ─────────────────────────────────────────────
 
-def _env_path() -> Path:
-    """ai-short-drama/.env 的绝对路径（agent_utils.py 位于 <root>/studios/）。"""
-    return Path(__file__).resolve().parents[1] / "ai-short-drama" / ".env"
+def _env_path() -> Path | None:
+    """返回导入时实际加载的 .env 路径（无则 None）。
+
+    单一真相源：与模块顶部的一次性加载保持一致，避免二次动态扫描导致不一致。
+    """
+    return _ENV_LOADED
 
 
 def get_api_key() -> str | None:
-    """读取 DeepSeek key：优先环境变量 DEEPSEEK_API_KEY，其次 ai-short-drama/.env。"""
+    """读取 DeepSeek key：环境变量 DEEPSEEK_API_KEY 优先，其次根 .env / 遗留 ai-short-drama/.env。
+
+    注：.env 已在模块导入时以 override=False 载入，此处不再重复 load_dotenv。
+    """
     key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if key:
-        return key
-    env_path = _env_path()
-    if env_path.exists():
-        load_dotenv(env_path)
-        key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     return key or None
 
 
@@ -204,8 +223,8 @@ def call_deepseek(
         api_key = get_api_key()
         if not api_key:
             raise NoKeyError(
-                "未配置 DEEPSEEK_API_KEY（环境变量与 ai-short-drama/.env 均缺失）。"
-                "如需无 key 演示请使用 --demo；真实调用请在 ai-short-drama/.env 配置 key。"
+                "未配置 DEEPSEEK_API_KEY（环境变量与根 .env／遗留 ai-short-drama/.env 均缺失）。"
+                "如需无 key 演示请使用 --demo；真实调用请在根 .env 配置 key（见 .env.example）。"
             )
         headers = {
             "Authorization": f"Bearer {api_key}",

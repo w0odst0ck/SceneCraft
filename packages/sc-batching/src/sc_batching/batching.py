@@ -26,7 +26,7 @@ from pydantic import BaseModel, ValidationError
 
 
 class NoKeyError(Exception):
-    """未配置 DEEPSEEK_API_KEY（环境变量与 ai-short-drama/.env 均缺失）。"""
+    """未配置 LLM API key（DEEPSEEK_API_KEY 环境变量 / .env 文件均缺失）。"""
 
 
 # ── max_tokens 取值来源注入（M0 权宜，见模块 docstring）────────

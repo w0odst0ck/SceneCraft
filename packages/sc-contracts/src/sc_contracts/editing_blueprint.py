@@ -1,6 +1,6 @@
 """EditingBlueprint — 剪辑蓝图产物（Studio Edit 输出）
 
-参考 v1 ai-short-drama/schemas/dual_track.py：
+历史参考：ai-short-drama（v1，已弃用）schemas/dual_track.py：
 TimelineEntry（镜头入出帧 + 转场）+ AudioBeat（音频落点）。
 """
 from __future__ import annotations
