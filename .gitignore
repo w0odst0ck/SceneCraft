@@ -104,3 +104,12 @@ designs/
 # ── 归档区：上游 OpenMontage（220MB）、旧测试产物 不入仓 ──
 archive/OpenMontage/
 archive/test-results-old/
+
+# ── 隐私 / 版权：不入公开仓库 ──────────────────────
+# 素材卡含他人作品摘录（版权备注明确「仅本机学习参考，不推送仓库」）
+story-materials/cards/
+# 归档的上游代码与旧测试产物（本地保留，不入仓）
+archive/ai-short-drama/
+archive/openmontage-bridge/
+archive/test-results-old/
+archive/docs-2026-11-26/
