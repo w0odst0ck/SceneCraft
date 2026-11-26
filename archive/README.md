@@ -6,7 +6,7 @@
 
 | 目录 | 归档原因 | 可否删除 |
 |---|---|---|
-| `OpenMontage/`（220MB） | 上游视频引擎 fork。**0 文件入仓、零运行时引用**（render 站已改 ComfyUI 直连） | ✅ 可删（GitHub 上游仍在） |
+| ~~`OpenMontage/`（220MB）~~ | **已于 2026-11-26 删除**（0 文件入仓、零运行时引用；上游可从 GitHub 重克隆） | 已删 |
 | `ai-short-drama/` | v1 单管线实现。逻辑已移植进 `studios/` + `packages/`，仅剩 `.env` 读取依赖（已迁到根 `.env`） | ✅ 可删 |
 | `openmontage-bridge/` | v1 隔离调用层。**零运行时引用**（render 站不再用它） | ✅ 可删 |
 | `test-results-old/` | 2026-08~09 的调试产物（demo/smoke/早期 test-coffee 轮次） | ✅ 可删（`test-results/` 已保留关键证据） |
