@@ -99,3 +99,7 @@ test-results/*/
 # ── collab-flow 运行时 + dsh 设计文档 ────────────
 .flow/
 designs/
+
+# ── 归档区：上游 OpenMontage（220MB）、旧测试产物 不入仓 ──
+archive/OpenMontage/
+archive/test-results-old/
