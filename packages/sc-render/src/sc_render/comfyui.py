@@ -348,7 +348,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         description="ComfyUI LTX-Video 2B 出片客户端（提交 workflow → 轮询 → 下载 webm）",
     )
     parser.add_argument("prompt", help="视频提示词（六要素完整文本）")
-    parser.add_argument("--out", default="plan/s4-render-samples", help="产物保存目录")
+    parser.add_argument("--out", default="out/render-samples", help="产物保存目录")
     parser.add_argument("--neg", default=DEFAULT_NEGATIVE, help="负面提示词")
     parser.add_argument("--w", type=int, default=DEFAULT_WIDTH, help="宽（默认 1024）")
     parser.add_argument("--h", type=int, default=DEFAULT_HEIGHT, help="高（默认 576）")

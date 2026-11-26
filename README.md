@@ -4,7 +4,8 @@
 > 可作为独立库使用，也可作为一条完整流水线跑通「概念 → 视频」。
 
 📖 **产品说明书**：[`docs/产品说明书.md`](docs/产品说明书.md)（工作流 / 参数 / 运维 / 迭代方向）
-🧭 路线图：[`plan/roadmap.md`](plan/roadmap.md) · 🧪 测试台账：[`test-results/README.md`](test-results/README.md)
+📝 **项目复盘**：[`docs/SceneCraft-复盘-2026-11-26.md`](docs/SceneCraft-复盘-2026-11-26.md)（4 个半月的时间线 / 资产盘点 / 教训）
+🧪 测试台账：[`test-results/README.md`](test-results/README.md)
 
 ---
 
@@ -81,8 +82,8 @@ schemas/          契约薄转发层（实现已移至 packages/sc-contracts）
 story-materials/  素材卡（22 张）+ 模板（6 类）
 scripts/          工具（渲染客户端 / 显存调度 / 环境切换）
 tests/            140 个测试
-docs/             产品说明书
-archive/          已归档（上游 OpenMontage / ai-short-drama / bridge — 零运行时引用）
+docs/             产品说明书 + 项目复盘
+archive/          已归档（上游三件套 / 旧测试产物 / plan+memory 原始记录）
 ```
 
 ---

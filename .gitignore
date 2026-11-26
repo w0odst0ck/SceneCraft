@@ -81,7 +81,8 @@ docker-compose.override.yml
 # ── 上游 OpenMontage ───────────────────────────────
 OpenMontage/
 
-# ── 本地规划 & 记忆（含个人决策/架构记录）────────────
+# ── 本地规划 & 记忆（已归档至 archive/docs-2026-11-26/）
+# 新建的 plan/ 或 memory/ 仍然不入仓（个人决策记录）
 plan/
 memory/
 

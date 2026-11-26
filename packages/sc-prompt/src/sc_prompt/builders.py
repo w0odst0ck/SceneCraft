@@ -41,7 +41,7 @@ def build_prompt_batches(
     返回 (scene_groups, batches)，scene_groups 供调用方打印批次数。
     拼接顺序与搬迁前完全一致（dict 字段顺序、ensure_ascii、分隔符均不变）。
     """
-    # 延迟导入：sc-prompt 仅依赖 sc-batching（依赖方向见 plan/插件化方案.md §3）
+    # 延迟导入：sc-prompt 仅依赖 sc-batching（依赖方向见 docs/产品说明书.md）
     from sc_batching import group_shots_by_scene
 
     append = append_contract or _append_output_contract
