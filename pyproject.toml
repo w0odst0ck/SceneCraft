@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-scenecraft"
+version = "0.1.0"
+description = "AI short-drama toolkit nodes for ComfyUI: material library with copyright gate + card inspector"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/w0odst0ck/ComfyUI-SceneCraft"
+
+[tool.comfy]
+PublisherId = "w0odst0ck"
+DisplayName = "ComfyUI-SceneCraft"
+Icon = ""
